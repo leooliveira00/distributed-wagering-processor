@@ -27,6 +27,16 @@ async function triggers(): Promise<string[]> {
   return rows.map((row) => row.tgname);
 }
 
+async function indexExists(name: string): Promise<boolean> {
+  const rows: { exists: boolean }[] = await db.sql.unsafe(
+    `select exists (select 1 from pg_indexes where schemaname = 'public' and indexname = $1)`,
+    [name],
+  );
+  return rows[0]?.exists ?? false;
+}
+
+const DEPENDENTS_INDEX = 'wager_transactions_pending_dependents_idx';
+
 beforeAll(async () => {
   db = await createTestDatabase('migrations', { migrate: false });
 });
@@ -41,12 +51,13 @@ describe('migrations', () => {
     expect(await tables()).toEqual([]);
   });
 
-  it('apply the schema and the integrity triggers', async () => {
+  it('apply the schema, the integrity triggers and the indexes', async () => {
     const applied = await db.orm.migrator.up();
 
     expect(applied.map((migration) => migration.name)).toEqual([
       'Migration20261106000100_initial_schema',
       'Migration20261106000200_ledger_integrity',
+      'Migration20261106000300_pending_dependents_index',
     ]);
     expect(await tables()).toEqual(TABLES);
     expect(await triggers()).toEqual([
@@ -56,9 +67,14 @@ describe('migrations', () => {
       'wallets_balance_has_ledger_entry',
       'wallets_guard_changes',
     ]);
+    expect(await indexExists(DEPENDENTS_INDEX)).toBe(true);
   });
 
   it('revert one migration at a time', async () => {
+    await db.orm.migrator.down();
+    expect(await indexExists(DEPENDENTS_INDEX)).toBe(false);
+    expect(await triggers()).toHaveLength(5);
+
     await db.orm.migrator.down();
     expect(await triggers()).toEqual([]);
     expect(await tables()).toEqual(TABLES);

@@ -1,5 +1,5 @@
 import { IsolationLevel } from '@mikro-orm/core';
-import { type MikroORM } from '@mikro-orm/postgresql';
+import { type MikroORM, type SqlEntityManager } from '@mikro-orm/postgresql';
 import {
   type TransactionScope,
   type UnitOfWork,
@@ -29,14 +29,18 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
   ): Promise<T> {
     try {
       return await this.orm.em.fork().transactional(
-        (em) =>
-          work({
+        (em) => {
+          // now() is fixed for the whole SQL transaction, so one round trip is enough.
+          let databaseNow: Promise<Date> | undefined;
+          return work({
             wallets: new MikroOrmWalletRepository(em),
             transactions: new MikroOrmWagerTransactionRepository(em),
             ledger: new MikroOrmLedgerRepository(em),
             inbox: new MikroOrmInboxRepository(em),
             outbox: new MikroOrmOutboxRepository(em),
-          }),
+            databaseNow: () => (databaseNow ??= readDatabaseNow(em)),
+          });
+        },
         {
           isolationLevel:
             options.isolation === 'snapshot'
@@ -49,4 +53,11 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
       throw translatePersistenceError(error);
     }
   }
+}
+
+async function readDatabaseNow(em: SqlEntityManager): Promise<Date> {
+  const [row] = await em.execute<{ now: Date }[]>('select now() as now');
+  if (!row) throw new Error('select now() returned no row');
+  // node-postgres returns timestamptz as a Date; new Date() also copes with a string.
+  return new Date(row.now);
 }
