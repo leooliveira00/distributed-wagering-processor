@@ -1,4 +1,5 @@
-import { IsolationLevel, type MikroORM } from '@mikro-orm/core';
+import { IsolationLevel } from '@mikro-orm/core';
+import { type MikroORM } from '@mikro-orm/postgresql';
 import {
   type TransactionScope,
   type UnitOfWork,

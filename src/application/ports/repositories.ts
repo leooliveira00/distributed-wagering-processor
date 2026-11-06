@@ -1,3 +1,4 @@
+import { type Money } from '../../domain/money/money';
 import { type InboxMessage } from '../../domain/messaging/inbox-message';
 import { type OutboxMessage } from '../../domain/messaging/outbox-message';
 import { type WagerTransaction } from '../../domain/wagering/wager-transaction';
@@ -40,8 +41,17 @@ export interface LedgerPage {
   nextAfterVersion: number | undefined;
 }
 
+/** Ledger totals of one wallet, aggregated by the database. */
+export interface LedgerSummary {
+  credits: Money;
+  debits: Money;
+  entries: number;
+}
+
 export interface LedgerRepository {
   add(entry: WalletLedgerEntry): void;
+  /** Sums every entry of the wallet; amounts come back exact, in the wallet currency. */
+  summarize(walletId: string, currency: string): Promise<LedgerSummary>;
   /** Entries ordered by wallet version; `afterVersion` makes the cursor stable under inserts. */
   listByWallet(
     walletId: string,

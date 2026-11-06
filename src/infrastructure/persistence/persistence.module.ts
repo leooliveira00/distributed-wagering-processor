@@ -1,6 +1,5 @@
-import { MikroORM } from '@mikro-orm/core';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { PostgreSqlDriver } from '@mikro-orm/postgresql';
+import { MikroORM, PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { Module } from '@nestjs/common';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../application/ports/unit-of-work';
 import { ENV } from '../config/config.module';
