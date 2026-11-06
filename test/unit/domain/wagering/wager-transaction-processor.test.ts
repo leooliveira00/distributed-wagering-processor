@@ -354,6 +354,48 @@ describe('missing reference policy', () => {
     );
   });
 
+  it('counts the final attempt, so attempts equals the limit after exhaustion', () => {
+    const wallet = openWallet('100.00');
+    const refund = newTransaction(Kind.Refund, { referenceExternalTransactionId: 'never' });
+
+    run(refund, wallet); // attempt 1: waits
+    run(refund, wallet); // attempt 2: waits
+    run(refund, wallet, { missingReference: { action: 'reject' } }); // attempt 3: gives up
+
+    expect(refund.status).toBe(Status.Rejected);
+    expect(refund.attempts).toBe(3);
+    expect(refund.nextAttemptAt).toBeUndefined();
+  });
+
+  it('gives up with REFERENCE_NOT_PROCESSED when the reference exists but is still waiting', () => {
+    const wallet = openWallet('100.00');
+    const win = newTransaction(Kind.Win, {
+      externalTransactionId: 'win-1',
+      referenceExternalTransactionId: 'bet-1',
+    });
+    win.markPendingReference({ observedBalance: brl('100.00'), nextAttemptAt: LATER });
+    const rollback = newTransaction(Kind.Rollback, { referenceExternalTransactionId: 'win-1' });
+
+    expectRejected(rollback, wallet, FailureCode.ReferenceNotProcessed, () =>
+      run(rollback, wallet, { reference: win, missingReference: { action: 'reject' } }),
+    );
+    expect(rollback.attempts).toBe(1);
+  });
+
+  it('does not count an attempt for rejections unrelated to a missing reference', () => {
+    const wallet = openWallet('100.00');
+    const bet = processedTransaction(Kind.Bet, {
+      externalTransactionId: 'bet-x',
+      money: brl('10.00'),
+    });
+    const refund = newTransaction(Kind.Refund, { referenceExternalTransactionId: 'bet-x' });
+
+    run(refund, wallet, { reference: bet, missingReference: { action: 'reject' } });
+
+    expect(refund.failureCode).toBe(FailureCode.ReferenceAmountMismatch);
+    expect(refund.attempts).toBe(0);
+  });
+
   it('resolves a retried transaction once the reference arrives', () => {
     const wallet = openWallet('75.00');
     const bet = processedTransaction(Kind.Bet, { externalTransactionId: 'bet-late' });

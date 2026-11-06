@@ -223,7 +223,10 @@ export class WagerTransaction {
     return this._observedBalance;
   }
 
-  /** Number of times the reference could not be resolved. */
+  /**
+   * Number of times the reference was looked up and was not ready, including the final attempt
+   * that gave up. After exhaustion it equals the configured maximum (README §7.1, D11).
+   */
   get attempts(): number {
     return this._attempts;
   }
@@ -254,6 +257,12 @@ export class WagerTransaction {
     this._failureCode = code;
     this._observedBalance = props.observedBalance;
     this._nextAttemptAt = undefined;
+  }
+
+  /** Final attempt: the reference is still not ready, so the attempt counts and it is rejected. */
+  giveUpOnReference(code: FailureCode, props: RejectProps): void {
+    this.reject(code, props);
+    this._attempts++;
   }
 
   fail(code: FailureCode): void {
