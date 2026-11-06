@@ -18,6 +18,26 @@ const COUNTERS: Readonly<Record<CounterName, { help: string; labels: readonly st
     help: 'Failed outbox publication attempts (retried with backoff)',
     labels: ['eventType'],
   },
+  sqs_messages_received_total: {
+    help: 'Messages received from the wager transactions queue',
+    labels: [],
+  },
+  sqs_messages_processed_total: {
+    help: 'Messages acknowledged, by outcome',
+    labels: ['outcome'],
+  },
+  sqs_duplicate_messages_total: {
+    help: 'Redelivered or duplicate messages detected by the inbox or idempotency key',
+    labels: [],
+  },
+  sqs_message_retries_total: {
+    help: 'Messages left for a backoff retry, by reason',
+    labels: ['reason'],
+  },
+  sqs_messages_dead_lettered_total: {
+    help: 'Messages moved to the dead-letter queue by the consumer, by reason',
+    labels: ['reason'],
+  },
 };
 
 /** prom-client adapter with its own registry (no global state shared between tests). */

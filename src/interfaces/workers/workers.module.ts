@@ -11,9 +11,12 @@ import { CLOCK, type Clock } from '../../application/ports/system';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../application/ports/unit-of-work';
 import { ENV } from '../../infrastructure/config/config.module';
 import { type Env } from '../../infrastructure/config/env';
+import { WageringModule } from '../http/wagering/wagering.module';
 import { OutboxPublisherWorker } from './outbox-publisher.worker';
+import { SqsConsumerWorker } from './sqs-consumer.worker';
 
 @Module({
+  imports: [WageringModule],
   providers: [
     {
       provide: PublishOutbox,
@@ -34,6 +37,7 @@ import { OutboxPublisherWorker } from './outbox-publisher.worker';
         }),
     },
     OutboxPublisherWorker,
+    SqsConsumerWorker,
   ],
 })
 export class WorkersModule {}

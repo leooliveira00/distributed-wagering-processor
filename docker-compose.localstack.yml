@@ -1,0 +1,18 @@
+# Optional override: run the SQS emulator on LocalStack instead of MiniStack.
+#
+#   LOCALSTACK_AUTH_TOKEN=<token> docker compose -f docker-compose.yml -f docker-compose.localstack.yml up -d
+#
+# Current LocalStack images refuse to start without an auth token, which is why MiniStack is the
+# default. Queues are created with the AWS SDK only (sqs-init), so nothing else changes. Run the
+# emulator contract suite (test/integration/sqs/emulator-contract.test.ts) after switching.
+services:
+  sqs:
+    image: localstack/localstack:2026.10.6
+    environment:
+      SERVICES: sqs
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?set LOCALSTACK_AUTH_TOKEN to use LocalStack}
+    healthcheck:
+      test: ['CMD', 'curl', '-fs', 'http://localhost:4566/_localstack/health']
+      interval: 2s
+      timeout: 3s
+      retries: 60

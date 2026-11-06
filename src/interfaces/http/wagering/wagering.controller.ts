@@ -20,8 +20,8 @@ import {
   type WagerSubmissionResult,
   type WagerTransactionView,
 } from '../../../application/wagering/wager-views';
-import { WagerTransactionKind } from '../../../domain/wagering/wager-transaction-kind';
 import { WagerTransactionStatus } from '../../../domain/wagering/wager-transaction-status';
+import { IDEMPOTENCY_KEY_PATTERN, wagerOperationSchema } from '../../contracts/wager-contract';
 import { type AuthenticatedRequest } from '../auth/provider-auth.guard';
 import { type HttpErrorBody } from '../errors/http-error-mapping';
 import { requestContextFrom } from '../request-context';
@@ -29,21 +29,6 @@ import { parseInput } from '../validation';
 import { FAILURE_MESSAGES } from './failure-messages';
 
 const IDEMPOTENCY_HEADER = 'idempotency-key';
-/** 1 to 255 visible ASCII characters (fits the idempotency_key column). */
-const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7E]{1,255}$/;
-
-const submitSchema = z.strictObject({
-  providerId: z.string().min(1).max(64),
-  externalTransactionId: z.string().min(1).max(128),
-  playerId: z.uuid(),
-  walletId: z.uuid(),
-  roundId: z.string().min(1).max(128),
-  gameId: z.string().min(1).max(128),
-  kind: z.enum(WagerTransactionKind),
-  // Shape only: the amount format is validated by the Money value object.
-  money: z.strictObject({ amount: z.string(), currency: z.string() }),
-  referenceExternalTransactionId: z.string().min(1).max(128).optional(),
-});
 
 const transactionIdSchema = z.uuid();
 const providerParamsSchema = z.object({
@@ -87,7 +72,7 @@ export class WageringController {
         'INVALID_IDEMPOTENCY_KEY',
       );
     }
-    const payload = parseInput(submitSchema, body);
+    const payload = parseInput(wagerOperationSchema, body);
 
     // README §2: the provider identity carried by the request is subject to domain checks.
     const identity = request.providerIdentity;
