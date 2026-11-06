@@ -6,9 +6,10 @@ import { LoggerModule } from './infrastructure/observability/logger.module';
 import { ProviderAuthGuard } from './interfaces/http/auth/provider-auth.guard';
 import { HttpErrorFilter } from './interfaces/http/errors/http-error.filter';
 import { HealthController } from './interfaces/http/health/health.controller';
+import { WalletsModule } from './interfaces/http/wallets/wallets.module';
 
 @Module({
-  imports: [ConfigModule, LoggerModule, InfrastructureModule],
+  imports: [ConfigModule, LoggerModule, InfrastructureModule, WalletsModule],
   controllers: [HealthController],
   providers: [
     { provide: APP_FILTER, useClass: HttpErrorFilter },
