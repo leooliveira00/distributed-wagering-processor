@@ -6,7 +6,12 @@ export type CounterName =
   | 'wallet_reconciliations_total'
   | 'wallet_reconciliation_divergences_total'
   | 'outbox_events_published_total'
-  | 'outbox_publish_failures_total';
+  | 'outbox_publish_failures_total'
+  | 'sqs_messages_received_total'
+  | 'sqs_messages_processed_total'
+  | 'sqs_duplicate_messages_total'
+  | 'sqs_message_retries_total'
+  | 'sqs_messages_dead_lettered_total';
 
 export type MetricLabels = Readonly<Record<string, string>>;
 

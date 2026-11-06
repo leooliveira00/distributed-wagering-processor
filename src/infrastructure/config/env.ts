@@ -47,6 +47,15 @@ const envSchema = z
     SQS_EVENTS_QUEUE_NAME: z.string().endsWith('.fifo').default('wagering-events.fifo'),
     SQS_MAX_RECEIVE_COUNT: z.coerce.number().int().min(1).default(5),
 
+    /** Consumer of the wager transactions queue (README §10). */
+    SQS_CONSUMER_NAME: z.string().min(1).max(128).default('wager-transactions-consumer'),
+    SQS_CONSUMER_BATCH_SIZE: z.coerce.number().int().min(1).max(10).default(10),
+    SQS_CONSUMER_WAIT_TIME_SECONDS: z.coerce.number().int().min(0).max(20).default(10),
+    SQS_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(1).default(1_000),
+    SQS_RETRY_MAX_DELAY_MS: z.coerce.number().int().min(1).default(60_000),
+    /** Must stay below the container stop grace period (docker-compose: 30s). */
+    CONSUMER_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(0).default(10_000),
+
     /** Outbox publisher: lease-based claiming, never drops events (retries forever, capped). */
     OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(10).default(500),
     OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
