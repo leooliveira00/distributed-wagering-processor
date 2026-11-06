@@ -10,7 +10,7 @@ import {
   type WalletRepository,
 } from '../../application/ports/repositories';
 import { type InboxMessage } from '../../domain/messaging/inbox-message';
-import { type OutboxMessage } from '../../domain/messaging/outbox-message';
+import { OutboxMessage } from '../../domain/messaging/outbox-message';
 import { Money } from '../../domain/money/money';
 import { type WagerTransaction } from '../../domain/wagering/wager-transaction';
 import { WagerTransactionKind } from '../../domain/wagering/wager-transaction-kind';
@@ -253,8 +253,79 @@ export class MikroOrmInboxRepository implements InboxRepository {
   }
 }
 
+interface OutboxRow {
+  id: string;
+  aggregate_id: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  occurred_at: Date;
+  attempts: number;
+  next_attempt_at: Date | null;
+  published_at: Date | null;
+}
+
+/**
+ * Claiming is a single UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING:
+ * concurrent publishers skip rows another one is claiming instead of waiting for them, and the
+ * lease is committed before any network call, so no transaction stays open while publishing.
+ * This cannot be expressed through the unit of work, hence explicit SQL.
+ */
 export class MikroOrmOutboxRepository implements OutboxRepository {
-  constructor(private readonly em: EntityManager) {}
+  constructor(private readonly em: SqlEntityManager) {}
+
+  async claimDue(options: { limit: number; leaseMs: number }): Promise<OutboxMessage[]> {
+    const rows = await this.em.execute<OutboxRow[]>(
+      `update outbox_messages
+          set locked_until = now() + make_interval(secs => ? / 1000.0)
+        where id in (
+          select id
+            from outbox_messages
+           where published_at is null
+             and (next_attempt_at is null or next_attempt_at <= now())
+             and (locked_until is null or locked_until < now())
+           order by occurred_at, id
+           limit ?
+           for update skip locked)
+        returning id, aggregate_id, event_type, payload, occurred_at, attempts,
+                  next_attempt_at, published_at`,
+      [options.leaseMs, options.limit],
+    );
+    return rows
+      .map((row) =>
+        OutboxMessage.rehydrate({
+          id: row.id,
+          aggregateId: row.aggregate_id,
+          eventType: row.event_type,
+          payload: row.payload,
+          occurredAt: row.occurred_at,
+          attempts: row.attempts,
+          nextAttemptAt: row.next_attempt_at ?? undefined,
+          publishedAt: row.published_at ?? undefined,
+        }),
+      )
+      .sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || a.id.localeCompare(b.id));
+  }
+
+  async markPublished(ids: readonly string[], at: Date): Promise<void> {
+    if (ids.length === 0) return;
+    await this.em.execute(
+      `update outbox_messages
+          set published_at = ?, locked_until = null, next_attempt_at = null
+        where id in (?) and published_at is null`,
+      // MikroORM expands an array bound to a single `?` into a comma-separated list.
+      [at, [...ids]],
+    );
+  }
+
+  async saveRetry(message: OutboxMessage, delayMs: number): Promise<void> {
+    await this.em.execute(
+      `update outbox_messages
+          set attempts = ?, next_attempt_at = now() + make_interval(secs => ? / 1000.0),
+              locked_until = null
+        where id = ? and published_at is null`,
+      [message.attempts, delayMs, message.id],
+    );
+  }
 
   add(message: OutboxMessage): void {
     this.em.persist(
