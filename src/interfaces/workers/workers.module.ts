@@ -7,12 +7,18 @@ import {
   type MessagePublisher,
 } from '../../application/ports/message-publisher';
 import { METRICS, type Metrics } from '../../application/ports/metrics';
-import { CLOCK, type Clock } from '../../application/ports/system';
+import { CLOCK, type Clock, ID_GENERATOR, type IdGenerator } from '../../application/ports/system';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../application/ports/unit-of-work';
+import { ResolvePendingReferences } from '../../application/wagering/resolve-pending-references';
+import {
+  PENDING_REFERENCE_POLICY,
+  type PendingReferencePolicy,
+} from '../../application/wagering/wager-command';
 import { ENV } from '../../infrastructure/config/config.module';
 import { type Env } from '../../infrastructure/config/env';
 import { WageringModule } from '../http/wagering/wagering.module';
 import { OutboxPublisherWorker } from './outbox-publisher.worker';
+import { PendingReferenceWorker } from './pending-reference.worker';
 import { SqsConsumerWorker } from './sqs-consumer.worker';
 
 @Module({
@@ -36,7 +42,34 @@ import { SqsConsumerWorker } from './sqs-consumer.worker';
           retry: { baseMs: env.OUTBOX_RETRY_BASE_DELAY_MS, capMs: env.OUTBOX_RETRY_MAX_DELAY_MS },
         }),
     },
+    {
+      provide: ResolvePendingReferences,
+      inject: [
+        UNIT_OF_WORK,
+        ID_GENERATOR,
+        CLOCK,
+        PENDING_REFERENCE_POLICY,
+        METRICS,
+        APP_LOGGER,
+        FAULT_INJECTOR,
+        ENV,
+      ],
+      useFactory: (
+        unitOfWork: UnitOfWork,
+        ids: IdGenerator,
+        clock: Clock,
+        policy: PendingReferencePolicy,
+        metrics: Metrics,
+        logger: AppLogger,
+        faults: FaultInjector,
+        env: Env,
+      ) =>
+        new ResolvePendingReferences(unitOfWork, ids, clock, policy, metrics, logger, faults, {
+          batchSize: env.PENDING_REFERENCE_BATCH_SIZE,
+        }),
+    },
     OutboxPublisherWorker,
+    PendingReferenceWorker,
     SqsConsumerWorker,
   ],
 })

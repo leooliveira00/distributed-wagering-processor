@@ -38,6 +38,14 @@ const COUNTERS: Readonly<Record<CounterName, { help: string; labels: readonly st
     help: 'Messages moved to the dead-letter queue by the consumer, by reason',
     labels: ['reason'],
   },
+  pending_reference_attempts_total: {
+    help: 'Worker attempts on PENDING_REFERENCE transactions, by outcome (processed, rejected, rescheduled)',
+    labels: ['outcome'],
+  },
+  pending_reference_failures_total: {
+    help: 'Worker attempts that failed unexpectedly and were deferred with backoff',
+    labels: [],
+  },
 };
 
 /** prom-client adapter with its own registry (no global state shared between tests). */
