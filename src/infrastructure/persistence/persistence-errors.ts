@@ -8,6 +8,7 @@ import {
 import {
   IntegrityViolationError,
   TransientError,
+  type TransientReason,
   UniqueViolationError,
 } from '../../application/errors';
 
@@ -19,15 +20,15 @@ import {
  * Anything not recognized is returned unchanged.
  */
 
-const TRANSIENT_SQLSTATES = new Set([
-  '40001', // serialization_failure
-  '40P01', // deadlock_detected
-  '55P03', // lock_not_available (lock_timeout)
-  '57014', // query_canceled (statement_timeout)
-  '57P01', // admin_shutdown
-  '08000', // connection_exception
-  '08003', // connection_does_not_exist
-  '08006', // connection_failure
+const TRANSIENT_SQLSTATES = new Map<string, TransientReason>([
+  ['40001', 'serialization'], // serialization_failure
+  ['40P01', 'deadlock'], // deadlock_detected
+  ['55P03', 'lock_timeout'], // lock_not_available (lock_timeout)
+  ['57014', 'statement_timeout'], // query_canceled (statement_timeout)
+  ['57P01', 'connection'], // admin_shutdown
+  ['08000', 'connection'], // connection_exception
+  ['08003', 'connection'], // connection_does_not_exist
+  ['08006', 'connection'], // connection_failure
 ]);
 const INTEGRITY_SQLSTATES = new Set(['23514', '23001', '23503', '23502']);
 const TRANSIENT_NODE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE']);
@@ -51,26 +52,40 @@ function sqlStateOf(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+function ormTransientReason(error: unknown): TransientReason | undefined {
+  if (error instanceof OptimisticLockError) return 'optimistic_version';
+  if (error instanceof DeadlockException) return 'deadlock';
+  if (error instanceof LockWaitTimeoutException) return 'lock_timeout';
+  if (error instanceof ConnectionException) return 'connection';
+  return undefined;
+}
+
 export function translatePersistenceError(error: unknown): unknown {
   if (error instanceof UniqueConstraintViolationException) {
     return new UniqueViolationError(constraintOf(error), { cause: error });
   }
-  if (
-    error instanceof OptimisticLockError ||
-    error instanceof DeadlockException ||
-    error instanceof LockWaitTimeoutException ||
-    error instanceof ConnectionException
-  ) {
-    return new TransientError('Temporary persistence failure, retry later', { cause: error });
+  const ormReason = ormTransientReason(error);
+  if (ormReason) {
+    return new TransientError('Temporary persistence failure, retry later', {
+      cause: error,
+      reason: ormReason,
+    });
   }
 
   const sqlState = sqlStateOf(error);
   if (sqlState === '23505') return new UniqueViolationError(constraintOf(error), { cause: error });
-  if (sqlState !== undefined && TRANSIENT_SQLSTATES.has(sqlState)) {
-    return new TransientError('Temporary persistence failure, retry later', { cause: error });
+  const sqlReason = sqlState === undefined ? undefined : TRANSIENT_SQLSTATES.get(sqlState);
+  if (sqlReason) {
+    return new TransientError('Temporary persistence failure, retry later', {
+      cause: error,
+      reason: sqlReason,
+    });
   }
   if (sqlState !== undefined && TRANSIENT_NODE_CODES.has(sqlState)) {
-    return new TransientError('Database unreachable, retry later', { cause: error });
+    return new TransientError('Database unreachable, retry later', {
+      cause: error,
+      reason: 'connection',
+    });
   }
   if (sqlState !== undefined && INTEGRITY_SQLSTATES.has(sqlState)) {
     return new IntegrityViolationError(
