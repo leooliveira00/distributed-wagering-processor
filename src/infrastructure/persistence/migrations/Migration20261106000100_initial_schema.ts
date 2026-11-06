@@ -12,7 +12,8 @@ export class Migration20261106000100_initial_schema extends Migration {
         player_id   uuid           not null,
         currency    char(3)        not null,
         balance     numeric(20, 2) not null,
-        version     integer        not null,
+        -- Starts at 1 (README §6.2); the ORM relies on this default on insert.
+        version     integer        not null default 1,
         created_at  timestamptz(3) not null,
         updated_at  timestamptz(3) not null,
 
@@ -46,7 +47,10 @@ export class Migration20261106000100_initial_schema extends Migration {
         reference_transaction_id          uuid           references wager_transactions (id),
         status                            varchar(24)    not null,
         failure_code                      varchar(64),
+        -- Wallet balance returned on replays (rule 7.7). Its currency is the wallet's, which differs
+        -- from the transaction currency on a CURRENCY_MISMATCH rejection, hence its own column.
         observed_balance                  numeric(20, 2),
+        observed_balance_currency         char(3),
         attempts                          integer        not null default 0,
         next_attempt_at                   timestamptz(3),
         created_at                        timestamptz(3) not null,
@@ -67,6 +71,8 @@ export class Migration20261106000100_initial_schema extends Migration {
         constraint wager_transactions_payload_hash_format_ck check (payload_hash ~ '^[0-9a-f]{64}$'),
         constraint wager_transactions_observed_balance_ck
           check (observed_balance is null or observed_balance >= 0),
+        constraint wager_transactions_observed_balance_currency_ck
+          check ((observed_balance is null) = (observed_balance_currency is null)),
         constraint wager_transactions_attempts_ck check (attempts >= 0),
 
         -- OPENING is internal and only internal transactions are OPENING (README §6.3).

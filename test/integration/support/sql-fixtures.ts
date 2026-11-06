@@ -50,6 +50,7 @@ export function transactionRow(walletId: string, playerId: string, overrides: Ro
     status: 'PROCESSED',
     failure_code: null,
     observed_balance: '75.00',
+    observed_balance_currency: 'BRL',
     attempts: 0,
     next_attempt_at: null,
     created_at: new Date(),
@@ -103,6 +104,7 @@ export async function seedWallet(
     amount: balance,
     currency,
     observed_balance: balance,
+    observed_balance_currency: currency,
   });
   await sql.begin(async (tx) => {
     await insertRow(tx, 'wallets', wallet);

@@ -316,6 +316,11 @@ describe('wager_transactions', () => {
       'wager_transactions_next_attempt_ck',
     ],
     ['negative attempts', { attempts: -1 }, 'wager_transactions_attempts_ck'],
+    [
+      'observed balance without currency',
+      { observed_balance_currency: null },
+      'wager_transactions_observed_balance_currency_ck',
+    ],
   ])('rejects %s', async (_, overrides, constraint) => {
     const wallet = await seedWallet(db.sql, '0.00');
 
