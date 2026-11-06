@@ -28,11 +28,17 @@ export interface TestResponse {
  * Boots the real application (all modules, filters, guards) on a random port against the
  * suite's disposable database, and talks to it over real HTTP.
  */
-export async function createTestApp(db: TestDatabase): Promise<TestApp> {
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+export async function createTestApp(
+  db: TestDatabase,
+  overrides: readonly { token: symbol; value: unknown }[] = [],
+): Promise<TestApp> {
+  let builder = Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(ENV)
-    .useValue(db.env)
-    .compile();
+    .useValue(db.env);
+  for (const { token, value } of overrides) {
+    builder = builder.overrideProvider(token).useValue(value);
+  }
+  const moduleRef = await builder.compile();
 
   const app = moduleRef.createNestApplication({ bufferLogs: true });
   configureApp(app);
