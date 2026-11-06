@@ -1,11 +1,20 @@
-import { type EntitySchema } from '@mikro-orm/core';
 import { Migrator } from '@mikro-orm/migrations';
 import { defineConfig, type Options } from '@mikro-orm/postgresql';
 import { type Env } from '../config/env';
 import { migrations } from './migrations';
+import { LedgerEntrySchema } from './records/ledger-entry.record';
+import { InboxMessageSchema, OutboxMessageSchema } from './records/messaging.records';
+import { WagerTransactionSchema } from './records/wager-transaction.record';
+import { WalletSchema } from './records/wallet.record';
 
 /** Entity schemas live in the persistence layer; the domain stays free of ORM metadata. */
-export const entitySchemas: EntitySchema[] = [];
+export const entitySchemas = [
+  WalletSchema,
+  WagerTransactionSchema,
+  LedgerEntrySchema,
+  InboxMessageSchema,
+  OutboxMessageSchema,
+];
 
 export function buildMikroOrmConfig(env: Env): Options {
   return defineConfig({
