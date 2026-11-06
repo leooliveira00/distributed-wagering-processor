@@ -66,4 +66,18 @@ export interface InboxRepository {
 
 export interface OutboxRepository {
   add(message: OutboxMessage): void;
+  /**
+   * Atomically leases up to `limit` due, unpublished messages for `leaseMs` (oldest first).
+   * Concurrent publishers never get the same message while its lease holds (SKIP LOCKED); an
+   * expired lease, e.g. after a crash, makes the message claimable again. Uses database time,
+   * so clock skew between instances cannot break the lease.
+   */
+  claimDue(options: { limit: number; leaseMs: number }): Promise<OutboxMessage[]>;
+  /** Marks messages as published and releases their lease (no-op if already published). */
+  markPublished(ids: readonly string[], at: Date): Promise<void>;
+  /**
+   * Persists a failed attempt and releases the lease. The next attempt time is `now() + delayMs`
+   * on the DATABASE clock, the same clock the claim query compares against.
+   */
+  saveRetry(message: OutboxMessage, delayMs: number): Promise<void>;
 }

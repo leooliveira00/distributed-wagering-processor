@@ -40,6 +40,26 @@ describe('loadEnv', () => {
     expect(() => loadEnv(source)).toThrow(InvalidEnvironmentError);
   });
 
+  it('parses fault injection points for test environments', () => {
+    const env = loadEnv({
+      NODE_ENV: 'test',
+      FAULT_INJECTION: 'outbox:after-claim, outbox:after-publish',
+    });
+
+    expect(env.FAULT_INJECTION).toEqual(['outbox:after-claim', 'outbox:after-publish']);
+  });
+
+  it('rejects an unknown fault injection point', () => {
+    expect(() => loadEnv({ FAULT_INJECTION: 'outbox:somewhere' })).toThrow(InvalidEnvironmentError);
+  });
+
+  it('refuses to arm fault injection in production', () => {
+    expect(() =>
+      loadEnv({ NODE_ENV: 'production', FAULT_INJECTION: 'outbox:after-claim' }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(loadEnv({ NODE_ENV: 'production' }).FAULT_INJECTION).toEqual([]);
+  });
+
   it('reports every invalid variable at once', () => {
     try {
       loadEnv({ PORT: 'abc', APP_ROLES: 'admin' });

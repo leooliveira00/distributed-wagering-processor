@@ -69,6 +69,7 @@ bun run dev
 | `bun run test:unit`                                      | Testes de unidade (sem infraestrutura)          |
 | `bun run test:integration`                               | Testes de integração (PostgreSQL real)          |
 | `bun run test:concurrency`                               | Paralelismo real, inclusive 3 processos         |
+| `bun run test:resilience`                                | Processos reais mortos (SIGKILL) e recuperação  |
 | `bun run migrate:up` / `migrate:down` / `migrate:status` | Migrations (reversíveis, uma por vez no `down`) |
 | `bun run sqs:bootstrap`                                  | Cria as filas no emulador                       |
 
@@ -84,6 +85,8 @@ bun run test:integration
 Cada suíte cria e migra um banco descartável próprio (`wagering_test_<suite>`), então os testes não dependem de limpeza nem interferem nos dados de desenvolvimento.
 
 Os testes de concorrência (`bun run test:concurrency`) disparam requisições realmente paralelas contra uma instância e contra **3 processos independentes** (`bun src/main.ts`) que compartilham apenas o PostgreSQL. Cobrem: a mesma aposta 50× em paralelo (um único débito), o cenário obrigatório de duas apostas de `80.00` sobre `100.00`, uma hot wallet com 30 apostas concorrentes e wallets independentes em paralelo. Todos terminam verificando `saldo == saldo reconstruído pelo ledger`.
+
+Os testes de resiliência (`bun run test:resilience`, exigem `docker compose up -d postgres sqs`) sobem processos reais da aplicação com `FAULT_INJECTION` e os matam com SIGKILL em pontos exatos: logo após reservar eventos da outbox e logo após publicar sem marcar. Outra instância assume e publica tudo; a duplicata é descartada pela deduplicação por `eventId`. `FAULT_INJECTION` é recusado quando `NODE_ENV=production`.
 
 ## API
 
@@ -108,3 +111,5 @@ Erros têm sempre o formato `{ "error": { "code", "message", "retryable" } }`: `
 Variáveis de ambiente são validadas na inicialização (zod); valores inválidos impedem o boot e todos os erros são listados de uma vez. Veja `.env.example`.
 
 `APP_ROLES` define quais papéis a instância executa (`api`, `consumer`, `outbox`, `pending`). Por padrão, todos.
+
+- `outbox`: publica os eventos da outbox em `wagering-events.fifo` (`MessageGroupId = walletId`, `MessageDeduplicationId = eventId`). Lotes reservados por lease (`FOR UPDATE SKIP LOCKED`), então várias instâncias publicam em paralelo sem repetir trabalho; falhas são retentadas com backoff exponencial, sem limite (nenhum evento confirmado é descartado).

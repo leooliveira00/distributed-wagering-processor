@@ -8,9 +8,17 @@ import { HttpErrorFilter } from './interfaces/http/errors/http-error.filter';
 import { HealthController } from './interfaces/http/health/health.controller';
 import { WageringModule } from './interfaces/http/wagering/wagering.module';
 import { WalletsModule } from './interfaces/http/wallets/wallets.module';
+import { WorkersModule } from './interfaces/workers/workers.module';
 
 @Module({
-  imports: [ConfigModule, LoggerModule, InfrastructureModule, WalletsModule, WageringModule],
+  imports: [
+    ConfigModule,
+    LoggerModule,
+    InfrastructureModule,
+    WalletsModule,
+    WageringModule,
+    WorkersModule,
+  ],
   controllers: [HealthController],
   providers: [
     { provide: APP_FILTER, useClass: HttpErrorFilter },

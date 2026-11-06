@@ -3,7 +3,10 @@
  * New metrics are added here together with their help text in the adapter.
  */
 export type CounterName =
-  'wallet_reconciliations_total' | 'wallet_reconciliation_divergences_total';
+  | 'wallet_reconciliations_total'
+  | 'wallet_reconciliation_divergences_total'
+  | 'outbox_events_published_total'
+  | 'outbox_publish_failures_total';
 
 export type MetricLabels = Readonly<Record<string, string>>;
 

@@ -40,7 +40,15 @@ export async function createTestDatabase(
     await admin.close();
   }
 
-  const env: Env = { ...baseEnv, DATABASE_NAME: name, LOG_LEVEL: 'warn' };
+  // HTTP-only by default: background workers are started explicitly by the suites that test them.
+  const env: Env = {
+    ...baseEnv,
+    DATABASE_NAME: name,
+    LOG_LEVEL: 'warn',
+    APP_ROLES: ['api'],
+    // Never talk to real AWS from tests: default to the compose SQS emulator.
+    AWS_ENDPOINT_URL: baseEnv.AWS_ENDPOINT_URL ?? 'http://localhost:4566',
+  };
   const config = buildMikroOrmConfig(env);
   const orm = await MikroORM.init({
     ...config,
