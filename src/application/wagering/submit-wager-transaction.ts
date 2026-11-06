@@ -1,13 +1,16 @@
 import { InboxMessage } from '../../domain/messaging/inbox-message';
 import { Money } from '../../domain/money/money';
 import { backoffDelayMs } from '../../domain/shared/backoff';
+import { DomainError } from '../../domain/shared/domain-error';
 import { INTERNAL_PROVIDER_ID, WagerTransaction } from '../../domain/wagering/wager-transaction';
 import {
+  ApplicationError,
   ConflictError,
   InvalidRequestError,
   TransientError,
   UniqueViolationError,
 } from '../errors';
+import { type Metrics } from '../ports/metrics';
 import { type Clock, type IdGenerator } from '../ports/system';
 import { type TransactionScope, type UnitOfWork } from '../ports/unit-of-work';
 import { payloadHash } from '../shared/canonical-json';
@@ -28,6 +31,15 @@ const RACE_CONSTRAINTS = new Set([
   'wager_transactions_external_uq',
   'inbox_messages_pk',
 ]);
+
+/** Conflicts caused by reusing an idempotency key or message id with another payload. */
+const IDEMPOTENCY_CONFLICTS = new Set([
+  'IDEMPOTENCY_KEY_CONFLICT',
+  'MESSAGE_PAYLOAD_CONFLICT',
+  'EXTERNAL_TRANSACTION_CONFLICT',
+]);
+
+type Entrypoint = 'http' | 'sqs';
 
 /**
  * Applies a provider operation (BET, WIN, LOSS, REFUND, ROLLBACK). One use case for both entry
@@ -54,6 +66,7 @@ export class SubmitWagerTransaction {
     private readonly ids: IdGenerator,
     private readonly clock: Clock,
     private readonly pendingReference: PendingReferencePolicy,
+    private readonly metrics: Metrics,
   ) {
     this.applier = new WagerTransactionApplier(ids);
   }
@@ -62,6 +75,24 @@ export class SubmitWagerTransaction {
     command: SubmitWagerCommand,
     context: RequestContext,
     inbox?: InboxContext,
+  ): Promise<WagerSubmissionResult> {
+    // Queue entries always carry the inbox context; HTTP submissions never do.
+    const entrypoint: Entrypoint = inbox ? 'sqs' : 'http';
+    const started = performance.now();
+    try {
+      const result = await this.process(command, context, inbox);
+      this.recordResult(command, result, entrypoint, started);
+      return result;
+    } catch (error) {
+      this.recordFailure(error, entrypoint, started);
+      throw error;
+    }
+  }
+
+  private async process(
+    command: SubmitWagerCommand,
+    context: RequestContext,
+    inbox: InboxContext | undefined,
   ): Promise<WagerSubmissionResult> {
     if (command.providerId === INTERNAL_PROVIDER_ID) {
       throw new InvalidRequestError(
@@ -125,7 +156,11 @@ export class SubmitWagerTransaction {
       }
     }
 
+    const lockStarted = performance.now();
     const wallet = await scope.wallets.findByIdForUpdate(transaction.walletId);
+    this.metrics.observe('wallet_lock_wait_seconds', seconds(lockStarted), {
+      source: 'submission',
+    });
     if (!wallet) throw walletNotFound(transaction.walletId);
 
     const existing = await scope.transactions.findByIdempotencyKey(
@@ -189,6 +224,44 @@ export class SubmitWagerTransaction {
     );
   }
 
+  /** After the commit (or the replay read): only what really happened is counted. */
+  private recordResult(
+    command: SubmitWagerCommand,
+    result: WagerSubmissionResult,
+    entrypoint: Entrypoint,
+    started: number,
+  ): void {
+    if (result.idempotentReplay) {
+      this.metrics.increment('wager_idempotent_replays_total', { entrypoint });
+    } else {
+      this.metrics.increment('wager_transactions_total', {
+        kind: command.kind,
+        status: result.status,
+        source: 'submission',
+      });
+    }
+    this.metrics.observe('wager_processing_duration_seconds', seconds(started), {
+      entrypoint,
+      outcome: result.idempotentReplay ? 'replay' : result.status.toLowerCase(),
+    });
+  }
+
+  private recordFailure(error: unknown, entrypoint: Entrypoint, started: number): void {
+    if (error instanceof ConflictError && IDEMPOTENCY_CONFLICTS.has(error.code)) {
+      this.metrics.increment('wager_idempotency_conflicts_total', { entrypoint, code: error.code });
+    }
+    const outcome =
+      error instanceof ApplicationError
+        ? error.kind
+        : error instanceof DomainError
+          ? 'invalid'
+          : 'error';
+    this.metrics.observe('wager_processing_duration_seconds', seconds(started), {
+      entrypoint,
+      outcome,
+    });
+  }
+
   private recordInbox(
     scope: TransactionScope,
     inbox: InboxContext | undefined,
@@ -200,6 +273,10 @@ export class SubmitWagerTransaction {
     message.markProcessed(at);
     scope.inbox.add(message);
   }
+}
+
+function seconds(since: number): number {
+  return (performance.now() - since) / 1000;
 }
 
 function replayOrConflict(existing: WagerTransaction, hash: string): WagerSubmissionResult {

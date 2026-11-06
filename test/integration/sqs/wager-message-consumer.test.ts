@@ -82,6 +82,7 @@ async function harness(name: string, visibilityTimeoutSeconds = 2): Promise<Harn
       backoff: { baseMs: 1_000, capMs: 60_000 },
       maxAttempts: 10,
     },
+    metrics,
   );
   const consumer = new WagerMessageConsumer(
     queues.main.sqs,
@@ -187,6 +188,19 @@ describe('WagerMessageConsumer — acknowledged outcomes', () => {
     expect(
       await metrics.counterValue('sqs_messages_processed_total', { outcome: 'processed' }),
     ).toBe(1);
+    expect(
+      await metrics.counterValue('wager_transactions_total', {
+        kind: 'BET',
+        status: 'PROCESSED',
+        source: 'submission',
+      }),
+    ).toBe(1);
+    expect(
+      await metrics.observationCount('wager_processing_duration_seconds', {
+        entrypoint: 'sqs',
+        outcome: 'processed',
+      }),
+    ).toBe(1);
     await expectLedgerConsistent(db.sql, wallet.id);
   }, 30_000);
 
@@ -204,6 +218,9 @@ describe('WagerMessageConsumer — acknowledged outcomes', () => {
     expect(await transactionsOf(wallet.id)).toHaveLength(1);
     expect(await inboxRows(message.messageId)).toBe(1);
     expect(await metrics.counterValue('sqs_duplicate_messages_total')).toBe(1);
+    expect(
+      await metrics.counterValue('wager_idempotent_replays_total', { entrypoint: 'sqs' }),
+    ).toBe(1);
     expect(await depth(queues.main)).toBe(0);
     await expectLedgerConsistent(db.sql, wallet.id);
   }, 30_000);

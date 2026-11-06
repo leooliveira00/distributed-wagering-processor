@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { SubmitWagerTransaction } from '../../src/application/wagering/submit-wager-transaction';
 import { CreateWallet } from '../../src/application/wallets/create-wallet';
 import { WagerTransactionKind } from '../../src/domain/wagering/wager-transaction-kind';
+import { PrometheusMetrics } from '../../src/infrastructure/observability/prometheus-metrics';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { SystemClock, UuidV7IdGenerator } from '../../src/infrastructure/system/system.adapters';
 import { type Instance, spawnInstance, waitUntilLive } from '../concurrency/support/instances';
@@ -44,10 +45,16 @@ async function commitEvents(bets: number): Promise<string[]> {
     { playerId: crypto.randomUUID(), initialBalance: { amount: '100.00', currency: 'BRL' } },
     context,
   );
-  const submit = new SubmitWagerTransaction(unitOfWork, ids, clock, {
-    backoff: { baseMs: 1_000, capMs: 60_000 },
-    maxAttempts: 10,
-  });
+  const submit = new SubmitWagerTransaction(
+    unitOfWork,
+    ids,
+    clock,
+    {
+      backoff: { baseMs: 1_000, capMs: 60_000 },
+      maxAttempts: 10,
+    },
+    new PrometheusMetrics(),
+  );
   for (let index = 0; index < bets; index++) {
     const externalTransactionId = `tx-${crypto.randomUUID()}`;
     await submit.execute(

@@ -96,7 +96,7 @@ function worker(
 }
 
 const submitter = (policy: PendingReferencePolicy) =>
-  new SubmitWagerTransaction(unitOfWork, ids, clock, policy);
+  new SubmitWagerTransaction(unitOfWork, ids, clock, policy, new PrometheusMetrics());
 
 const openWallet = (amount = '100.00'): Promise<WalletView> =>
   createWallet.execute({ playerId: uuid(), initialBalance: { amount, currency: 'BRL' } }, CONTEXT);
@@ -247,6 +247,17 @@ describe('a reference that arrives late', () => {
     await expectLedgerConsistent(db.sql, wallet.id);
     expect(
       await metrics.counterValue('pending_reference_attempts_total', { outcome: 'processed' }),
+    ).toBe(1);
+    // The same "transactions by status" series as submissions, from the worker's side.
+    expect(
+      await metrics.counterValue('wager_transactions_total', {
+        kind: 'REFUND',
+        status: 'PROCESSED',
+        source: 'pending-worker',
+      }),
+    ).toBe(1);
+    expect(
+      await metrics.observationCount('wallet_lock_wait_seconds', { source: 'pending-worker' }),
     ).toBe(1);
 
     // Events of the resolution: new correlation, caused by the waiting transaction.

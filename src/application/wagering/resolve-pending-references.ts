@@ -126,7 +126,11 @@ export class ResolvePendingReferences {
     transaction: WagerTransaction,
     correlationId: string,
   ): Promise<CommittedAttempt> {
+    const lockStarted = performance.now();
     const wallet = await scope.wallets.findByIdForUpdate(transaction.walletId);
+    this.metrics.observe('wallet_lock_wait_seconds', (performance.now() - lockStarted) / 1000, {
+      source: 'pending-worker',
+    });
     // The foreign key makes this impossible; fail loudly rather than guess.
     if (!wallet) {
       throw new Error(`Wallet ${transaction.walletId} of transaction ${transaction.id} not found`);
@@ -170,6 +174,14 @@ export class ResolvePendingReferences {
   /** Metrics and logs only after the commit, so a rolled-back attempt is never reported. */
   private report({ transaction, outcome, failureCode, correlationId }: CommittedAttempt): void {
     this.metrics.increment('pending_reference_attempts_total', { outcome });
+    if (outcome !== 'rescheduled') {
+      // Same series as submissions: transactions by status, whichever path decided them.
+      this.metrics.increment('wager_transactions_total', {
+        kind: transaction.kind,
+        status: transaction.status,
+        source: 'pending-worker',
+      });
+    }
     const fields = {
       transactionId: transaction.id,
       providerId: transaction.providerId,

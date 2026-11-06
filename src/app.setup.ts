@@ -1,7 +1,9 @@
 import { type INestApplication } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
 import { APP_LOGGER, type AppLogger } from './application/ports/logger';
+import { METRICS, type Metrics } from './application/ports/metrics';
 import { ID_GENERATOR, type IdGenerator } from './application/ports/system';
+import { httpMetricsMiddleware } from './interfaces/http/http-metrics.middleware';
 import { LogContextInterceptor } from './interfaces/http/log-context.interceptor';
 import { logContextMiddleware } from './interfaces/http/log-context.middleware';
 
@@ -10,6 +12,7 @@ export function configureApp(app: INestApplication): void {
   app.useLogger(app.get(Logger));
   // Registered before the routes, so the log scope wraps the whole request (README §12).
   app.use(logContextMiddleware(app.get<IdGenerator>(ID_GENERATOR)));
+  app.use(httpMetricsMiddleware(app.get<Metrics>(METRICS)));
   app.useGlobalInterceptors(new LogContextInterceptor(app.get<AppLogger>(APP_LOGGER)));
   app.enableShutdownHooks();
 }

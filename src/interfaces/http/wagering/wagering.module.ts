@@ -5,6 +5,7 @@ import {
   ID_GENERATOR,
   type IdGenerator,
 } from '../../../application/ports/system';
+import { METRICS, type Metrics } from '../../../application/ports/metrics';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../application/ports/unit-of-work';
 import { SubmitWagerTransaction } from '../../../application/wagering/submit-wager-transaction';
 import {
@@ -32,13 +33,14 @@ import { WageringController } from './wagering.controller';
     },
     {
       provide: SubmitWagerTransaction,
-      inject: [UNIT_OF_WORK, ID_GENERATOR, CLOCK, PENDING_REFERENCE_POLICY],
+      inject: [UNIT_OF_WORK, ID_GENERATOR, CLOCK, PENDING_REFERENCE_POLICY, METRICS],
       useFactory: (
         unitOfWork: UnitOfWork,
         ids: IdGenerator,
         clock: Clock,
         policy: PendingReferencePolicy,
-      ) => new SubmitWagerTransaction(unitOfWork, ids, clock, policy),
+        metrics: Metrics,
+      ) => new SubmitWagerTransaction(unitOfWork, ids, clock, policy, metrics),
     },
     {
       provide: GetWagerTransaction,

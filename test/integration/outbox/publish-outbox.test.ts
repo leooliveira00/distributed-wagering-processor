@@ -68,10 +68,16 @@ async function setup(name: string): Promise<Fixture> {
   const metrics = new PrometheusMetrics();
   const publisher = new SqsMessagePublisher(queue.sqs, queue.name);
   const createWallet = new CreateWallet(unitOfWork, ids, clock);
-  const submit = new SubmitWagerTransaction(unitOfWork, ids, clock, {
-    backoff: { baseMs: 1_000, capMs: 60_000 },
-    maxAttempts: 10,
-  });
+  const submit = new SubmitWagerTransaction(
+    unitOfWork,
+    ids,
+    clock,
+    {
+      backoff: { baseMs: 1_000, capMs: 60_000 },
+      maxAttempts: 10,
+    },
+    new PrometheusMetrics(),
+  );
   const context = { correlationId: 'corr-outbox' };
 
   const fixture: Fixture = {
@@ -149,6 +155,8 @@ describe('PublishOutbox', () => {
     }
     expect((await f.outboxState()).every((row) => row.published && !row.leased)).toBe(true);
     expect((await f.newPublisher().runOnce()).claimed).toBe(0);
+    // Outbox lag: one commit-to-publish delay observed per published event (README §12).
+    expect(await f.metrics.observationCount('outbox_publish_delay_seconds')).toBe(8);
   }, 30_000);
 
   it('splits the work between concurrent publishers without publishing anything twice', async () => {

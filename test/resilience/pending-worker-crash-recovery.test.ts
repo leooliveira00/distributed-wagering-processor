@@ -3,6 +3,7 @@ import { SubmitWagerTransaction } from '../../src/application/wagering/submit-wa
 import { type SubmitWagerCommand } from '../../src/application/wagering/wager-command';
 import { CreateWallet } from '../../src/application/wallets/create-wallet';
 import { WagerTransactionKind as Kind } from '../../src/domain/wagering/wager-transaction-kind';
+import { PrometheusMetrics } from '../../src/infrastructure/observability/prometheus-metrics';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { SystemClock, UuidV7IdGenerator } from '../../src/infrastructure/system/system.adapters';
 import { type Instance, spawnInstance, waitUntilLive } from '../concurrency/support/instances';
@@ -50,10 +51,16 @@ describe('pending-reference worker crash before commit (real processes)', () => 
     const ids = new UuidV7IdGenerator();
     const clock = new SystemClock();
     // Retries a minute away: only the BET arriving (expediting) makes the REFUND due.
-    const submit = new SubmitWagerTransaction(unitOfWork, ids, clock, {
-      backoff: { baseMs: 60_000, capMs: 60_000 },
-      maxAttempts: 10,
-    });
+    const submit = new SubmitWagerTransaction(
+      unitOfWork,
+      ids,
+      clock,
+      {
+        backoff: { baseMs: 60_000, capMs: 60_000 },
+        maxAttempts: 10,
+      },
+      new PrometheusMetrics(),
+    );
     const wallet = await new CreateWallet(unitOfWork, ids, clock).execute(
       { playerId: crypto.randomUUID(), initialBalance: { amount: '100.00', currency: 'BRL' } },
       { correlationId: 'corr-resilience' },
