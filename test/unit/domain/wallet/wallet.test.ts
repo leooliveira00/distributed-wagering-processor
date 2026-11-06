@@ -170,6 +170,8 @@ describe('Wallet.debit / credit', () => {
       return current;
     });
     expect(wallet.version).toBe(1 + movements.length);
+    // One entry per wallet version, starting at the opening entry (version 1).
+    expect(entries.map((entry) => entry.walletVersion)).toEqual([1, 2, 3, 4, 5]);
   });
 });
 

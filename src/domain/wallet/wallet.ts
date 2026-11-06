@@ -82,6 +82,7 @@ export class Wallet {
           money: initialBalance,
           balanceBefore: Money.zero(initialBalance.currency),
           balanceAfter: initialBalance,
+          walletVersion: 1,
           createdAt: new Date(at),
         })
       : undefined;
@@ -150,11 +151,12 @@ export class Wallet {
       money,
       balanceBefore: this._balance,
       balanceAfter,
+      walletVersion: this._version + 1,
       createdAt: new Date(movement.at),
     });
 
     this._balance = balanceAfter;
-    this._version++;
+    this._version = entry.walletVersion;
     this._updatedAt = new Date(movement.at);
     return entry;
   }
