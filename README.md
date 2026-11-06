@@ -65,9 +65,22 @@ bun run dev
 | `bun run typecheck`                                      | Checagem de tipos (`tsc --noEmit`)              |
 | `bun run lint`                                           | ESLint (`strictTypeChecked`)                    |
 | `bun run format` / `format:check`                        | Prettier                                        |
-| `bun test` / `bun run test:unit`                         | Testes                                          |
+| `bun test`                                               | Todas as suítes                                 |
+| `bun run test:unit`                                      | Testes de unidade (sem infraestrutura)          |
+| `bun run test:integration`                               | Testes de integração (PostgreSQL real)          |
 | `bun run migrate:up` / `migrate:down` / `migrate:status` | Migrations (reversíveis, uma por vez no `down`) |
 | `bun run sqs:bootstrap`                                  | Cria as filas no emulador                       |
+
+## Testes
+
+Os testes de integração rodam contra o PostgreSQL do compose, sem mocks:
+
+```bash
+docker compose up -d postgres
+bun run test:integration
+```
+
+Cada suíte cria e migra um banco descartável próprio (`wagering_test_<suite>`), então os testes não dependem de limpeza nem interferem nos dados de desenvolvimento.
 
 ## Configuração
 
