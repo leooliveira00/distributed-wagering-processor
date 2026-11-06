@@ -84,7 +84,14 @@ export class ResolvePendingReferences {
     return result;
   }
 
-  private async attemptNext(): Promise<PendingAttemptOutcome | undefined> {
+  /** One log scope per attempt: every line it writes carries the transaction it works on. */
+  private attemptNext(): Promise<PendingAttemptOutcome | undefined> {
+    // No request started this attempt: a new correlation id, caused by the waiting transaction.
+    const correlationId = this.ids.next();
+    return this.logger.withContext({ correlationId }, () => this.attemptInScope(correlationId));
+  }
+
+  private async attemptInScope(correlationId: string): Promise<PendingAttemptOutcome | undefined> {
     // Object holder: the compiler does not track assignments made inside the callback.
     const claim: { transaction?: WagerTransaction } = {};
     let committed: CommittedAttempt | undefined;
@@ -93,7 +100,12 @@ export class ResolvePendingReferences {
         const transaction = await scope.transactions.lockNextDuePending(await scope.databaseNow());
         if (!transaction) return undefined;
         claim.transaction = transaction;
-        const attempt = await this.attempt(scope, transaction);
+        this.logger.addContext({
+          transactionId: transaction.id,
+          walletId: transaction.walletId,
+          providerId: transaction.providerId,
+        });
+        const attempt = await this.attempt(scope, transaction, correlationId);
         // Test-only crash point: dying here must roll the whole attempt back.
         this.faults.trigger('pending:before-commit');
         return attempt;
@@ -112,6 +124,7 @@ export class ResolvePendingReferences {
   private async attempt(
     scope: TransactionScope,
     transaction: WagerTransaction,
+    correlationId: string,
   ): Promise<CommittedAttempt> {
     const wallet = await scope.wallets.findByIdForUpdate(transaction.walletId);
     // The foreign key makes this impossible; fail loudly rather than guess.
@@ -124,8 +137,6 @@ export class ResolvePendingReferences {
       attempt >= this.policy.maxAttempts
         ? { action: 'reject' }
         : { action: 'retry', delayMs: backoffDelayMs(attempt, this.policy.backoff) };
-    // No request started this attempt: a new correlation id, caused by the waiting transaction.
-    const correlationId = this.ids.next();
     const at = this.clock.now();
 
     const outcome = await this.applier.apply(scope, {

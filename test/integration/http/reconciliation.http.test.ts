@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
-import { APP_LOGGER, type AppLogger, type LogFields } from '../../../src/application/ports/logger';
+import { APP_LOGGER } from '../../../src/application/ports/logger';
 import { METRICS } from '../../../src/application/ports/metrics';
 import { type ReconciliationView } from '../../../src/application/wallets/reconcile-wallet';
 import { type WalletView } from '../../../src/application/wallets/wallet-views';
@@ -12,33 +12,7 @@ import { brl, Kind, newTransaction, uuid } from '../support/domain-fixtures';
 import { expectLedgerConsistent } from '../support/invariants';
 import { createTestApp, type TestApp } from '../support/test-app';
 import { createTestDatabase, type TestDatabase } from '../support/test-database';
-
-interface LogLine {
-  level: 'info' | 'warn' | 'error';
-  message: string;
-  fields: LogFields;
-}
-
-/** Records log lines so the test can assert the divergence is logged. */
-class RecordingLogger implements AppLogger {
-  readonly lines: LogLine[] = [];
-
-  get warnings(): LogLine[] {
-    return this.lines.filter((line) => line.level === 'warn');
-  }
-
-  info(message: string, fields: LogFields = {}): void {
-    this.lines.push({ level: 'info', message, fields });
-  }
-
-  warn(message: string, fields: LogFields = {}): void {
-    this.lines.push({ level: 'warn', message, fields });
-  }
-
-  error(message: string, fields: LogFields = {}): void {
-    this.lines.push({ level: 'error', message, fields });
-  }
-}
+import { RecordingLogger } from '../support/test-loggers';
 
 let db: TestDatabase;
 let api: TestApp;
@@ -144,7 +118,9 @@ describe('POST /wallets/:walletId/reconciliation', () => {
     await tamperBalance(wallet.id, '85.00');
     const divergencesBefore = await metrics.counterValue('wallet_reconciliation_divergences_total');
 
-    const response = await reconcile(wallet.id);
+    const response = await api.request('POST', `/wallets/${wallet.id}/reconciliation`, undefined, {
+      'x-correlation-id': 'corr-reconcile-1',
+    });
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
@@ -160,11 +136,15 @@ describe('POST /wallets/:walletId/reconciliation', () => {
     );
     expect(logger.warnings).toHaveLength(1);
     expect(logger.warnings[0]?.message).toBe('Wallet balance diverges from its ledger');
-    expect(logger.warnings[0]?.fields).toMatchObject({
+    expect(logger.warnings[0]?.fields).toMatchObject({ walletId: wallet.id, checkedEntries: 2 });
+    // Written deep inside the request, it still carries the request scope (README §12)...
+    expect(logger.warnings[0]?.context).toEqual({
+      correlationId: 'corr-reconcile-1',
       walletId: wallet.id,
-      difference: '5.00',
-      checkedEntries: 2,
     });
+    // ...and says which wallet diverges, never how much.
+    expect(JSON.stringify(logger.warnings[0])).not.toMatch(/5.00|85.00|80.00|difference/);
+    expect(response.headers.get('x-correlation-id')).toBe('corr-reconcile-1');
     // Not silently corrected: the stored balance is still the divergent one.
     const current = (await api.request('GET', `/wallets/${wallet.id}`)).body as WalletView;
     expect(current.balance.amount).toBe('85.00');

@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { type FaultInjector, type FaultPoint } from '../../../src/application/ports/fault-injector';
-import { type AppLogger } from '../../../src/application/ports/logger';
 import { type UnitOfWork } from '../../../src/application/ports/unit-of-work';
 import {
   ResolvePendingReferences,
@@ -23,6 +22,7 @@ import { SystemClock, UuidV7IdGenerator } from '../../../src/infrastructure/syst
 import { uuid } from '../support/domain-fixtures';
 import { expectLedgerConsistent } from '../support/invariants';
 import { createTestDatabase, type TestDatabase } from '../support/test-database';
+import { RecordingLogger } from '../support/test-loggers';
 
 /** Retries far away: only expediting (a reference reaching a terminal state) makes rows due. */
 const SLOW: PendingReferencePolicy = {
@@ -60,19 +60,6 @@ beforeEach(async () => {
 });
 
 // ---- helpers
-
-class RecordingLogger implements AppLogger {
-  readonly lines: { level: string; message: string; fields: Record<string, unknown> }[] = [];
-  info(message: string, fields = {}): void {
-    this.lines.push({ level: 'info', message, fields });
-  }
-  warn(message: string, fields = {}): void {
-    this.lines.push({ level: 'warn', message, fields });
-  }
-  error(message: string, fields = {}): void {
-    this.lines.push({ level: 'error', message, fields });
-  }
-}
 
 /** Throws (instead of killing the process) at the given point, a limited number of times. */
 class ThrowingFaults implements FaultInjector {
@@ -362,7 +349,7 @@ describe('scheduling', () => {
 
   it('retries with backoff, then rejects with REFERENCE_NOT_FOUND after the last attempt', async () => {
     const submit = submitter(FAST);
-    const { resolver, metrics } = worker(FAST);
+    const { resolver, metrics, logger } = worker(FAST);
     const wallet = await openWallet();
 
     const refund = await submit.execute(
@@ -393,6 +380,16 @@ describe('scheduling', () => {
     ).toBe(1);
     expect(await balanceOf(wallet.id)).toBe('100.00');
     await expectLedgerConsistent(db.sql, wallet.id);
+    // Each attempt logs in its own scope, carrying the transaction it works on (README §12).
+    const rejection = logger.warnings.find(
+      (line) => line.message === 'Pending transaction rejected',
+    );
+    expect(rejection?.context).toMatchObject({
+      transactionId: refund.transactionId,
+      walletId: wallet.id,
+      providerId: `provider-${wallet.id}`,
+    });
+    expect(rejection?.context.correlationId).toBeString();
   });
 
   it('rejects the whole chain when its root never arrives', async () => {
