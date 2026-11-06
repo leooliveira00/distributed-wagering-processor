@@ -61,6 +61,16 @@ export async function createTestDatabase(
   };
 }
 
+/** Awaits an operation that must fail and returns its error for synchronous assertions. */
+export async function captureError(operation: Promise<unknown>): Promise<unknown> {
+  try {
+    await operation;
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected the operation to fail, but it succeeded');
+}
+
 /** Asserts that a statement fails with the given SQLSTATE and, optionally, constraint or message. */
 export async function expectPgError(
   action: () => Promise<unknown>,
