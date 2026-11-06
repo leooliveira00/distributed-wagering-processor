@@ -31,6 +31,25 @@ export interface WagerTransactionRepository {
   ): Promise<WagerTransaction | undefined>;
   /** Whether a PROCESSED REFUND or ROLLBACK already targets the given transaction (D6). */
   hasProcessedReversal(referenceTransactionId: string): Promise<boolean>;
+  /**
+   * Locks and loads the PENDING_REFERENCE transaction due the longest (`next_attempt_at <= now`),
+   * with SELECT ... FOR UPDATE SKIP LOCKED: concurrent workers never get the same row and never
+   * wait for each other. The lock lasts until the unit of work ends; if it rolls back (crash,
+   * error), the row is simply pending again, so no lease is needed.
+   */
+  lockNextDuePending(now: Date): Promise<WagerTransaction | undefined>;
+  /**
+   * Makes the PENDING_REFERENCE transactions that reference `externalTransactionId` due right
+   * away, so the worker re-evaluates them on its next scan instead of after the backoff. Rows
+   * another worker holds are skipped (SKIP LOCKED): this statement never waits for a lock, which
+   * keeps the lock order deadlock-free. Returns how many rows were rescheduled.
+   */
+  expediteDependents(providerId: string, externalTransactionId: string): Promise<number>;
+  /**
+   * Postpones a pending transaction whose attempt failed unexpectedly, on the database clock,
+   * without counting it as a reference attempt. Prevents one bad row from blocking the worker.
+   */
+  deferPending(id: string, delayMs: number): Promise<void>;
   add(transaction: WagerTransaction): void;
   save(transaction: WagerTransaction): void;
 }

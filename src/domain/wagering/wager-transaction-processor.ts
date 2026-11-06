@@ -49,6 +49,7 @@ export class WagerTransactionProcessor {
     if (transaction.referenceExternalTransactionId !== undefined) {
       const resolution = this.resolveReference(input);
       if (resolution.kind === 'pending') return this.pending(input);
+      if (resolution.kind === 'exhausted') return this.giveUp(input, resolution.failureCode);
       if (resolution.kind === 'rejected') return this.reject(input, resolution.failureCode);
     }
 
@@ -66,19 +67,23 @@ export class WagerTransactionProcessor {
 
   private resolveReference(
     input: ProcessWagerInput,
-  ): { kind: 'resolved' } | { kind: 'pending' } | { kind: 'rejected'; failureCode: FailureCode } {
+  ):
+    | { kind: 'resolved' }
+    | { kind: 'pending' }
+    | { kind: 'exhausted'; failureCode: FailureCode }
+    | { kind: 'rejected'; failureCode: FailureCode } {
     const { transaction, reference, missingReference } = input;
 
     if (!reference) {
       return missingReference.action === 'retry'
         ? { kind: 'pending' }
-        : { kind: 'rejected', failureCode: FailureCode.ReferenceNotFound };
+        : { kind: 'exhausted', failureCode: FailureCode.ReferenceNotFound };
     }
     // A reference that is itself still waiting may resolve later: keep waiting with it.
     if (!reference.isTerminal()) {
       return missingReference.action === 'retry'
         ? { kind: 'pending' }
-        : { kind: 'rejected', failureCode: FailureCode.ReferenceNotProcessed };
+        : { kind: 'exhausted', failureCode: FailureCode.ReferenceNotProcessed };
     }
     if (reference.status !== WagerTransactionStatus.Processed) {
       return { kind: 'rejected', failureCode: FailureCode.ReferenceNotProcessed };
@@ -140,6 +145,12 @@ export class WagerTransactionProcessor {
 
   private reject(input: ProcessWagerInput, failureCode: FailureCode): ProcessWagerOutcome {
     input.transaction.reject(failureCode, { observedBalance: input.wallet.balance });
+    return { status: WagerTransactionStatus.Rejected, failureCode };
+  }
+
+  /** The last attempt found the reference still not ready: counted, then rejected. */
+  private giveUp(input: ProcessWagerInput, failureCode: FailureCode): ProcessWagerOutcome {
+    input.transaction.giveUpOnReference(failureCode, { observedBalance: input.wallet.balance });
     return { status: WagerTransactionStatus.Rejected, failureCode };
   }
 

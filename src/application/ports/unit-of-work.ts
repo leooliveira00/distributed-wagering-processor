@@ -13,6 +13,12 @@ export interface TransactionScope {
   ledger: LedgerRepository;
   inbox: InboxRepository;
   outbox: OutboxRepository;
+  /**
+   * Current time on the DATABASE clock (`now()`: the start of this SQL transaction). Every
+   * schedule that is later compared in SQL (`next_attempt_at <= now()`) is computed from it, so
+   * clock skew between instances can neither delay nor anticipate a retry.
+   */
+  databaseNow(): Promise<Date>;
 }
 
 export interface UnitOfWorkOptions {

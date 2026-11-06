@@ -120,7 +120,6 @@ describe('processing', () => {
 
   it('accepts a reversal that arrives before its reference as PENDING_REFERENCE', async () => {
     const wallet = await openWallet('100.00');
-    const before = Date.now();
 
     const result = await submit.execute(
       command(wallet, { kind: Kind.Refund, referenceExternalTransactionId: 'bet-not-yet' }),
@@ -129,14 +128,17 @@ describe('processing', () => {
 
     expect(result.status).toBe(Status.PendingReference);
     expect(await eventsOf(result.transactionId)).toEqual(['WagerTransactionPendingReference']);
-    const rows: { attempts: number; next_attempt_at: Date }[] = await db.sql.unsafe(
-      'select attempts, next_attempt_at from wager_transactions where id = $1',
+    // Scheduled on the DATABASE clock (P6), so it is measured against that clock: comparing with
+    // Date.now() mixes two clocks (host vs. Docker VM) and was off by >100ms in practice.
+    const rows: { attempts: number; due_in_ms: number }[] = await db.sql.unsafe(
+      `select attempts, (extract(epoch from next_attempt_at - now()) * 1000)::float8 as due_in_ms
+         from wager_transactions where id = $1`,
       [result.transactionId],
     );
     expect(rows[0]?.attempts).toBe(1);
-    const delay = (rows[0]?.next_attempt_at.getTime() ?? 0) - before;
-    expect(delay).toBeGreaterThanOrEqual(900);
-    expect(delay).toBeLessThan(5_000);
+    // Base delay 1s from the submission's now(), minus the few ms elapsed since then.
+    expect(rows[0]?.due_in_ms).toBeGreaterThan(500);
+    expect(rows[0]?.due_in_ms).toBeLessThanOrEqual(1_000);
   });
 
   it('reverses a BET once and rejects any further reversal of it (D6)', async () => {

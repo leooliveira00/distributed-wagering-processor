@@ -37,6 +37,9 @@ const envSchema = z
     PENDING_REFERENCE_BASE_DELAY_MS: z.coerce.number().int().min(1).default(1_000),
     PENDING_REFERENCE_MAX_DELAY_MS: z.coerce.number().int().min(1).default(60_000),
     PENDING_REFERENCE_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(10),
+    /** Pending-reference worker (role `pending`): idle delay between scans and items per scan. */
+    PENDING_REFERENCE_POLL_INTERVAL_MS: z.coerce.number().int().min(10).default(500),
+    PENDING_REFERENCE_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(20),
 
     AWS_REGION: z.string().min(1).default('us-east-1'),
     AWS_ENDPOINT_URL: z.url().optional(),
@@ -74,10 +77,25 @@ const envSchema = z
           .filter((point) => point.length > 0),
       )
       .pipe(
-        z.array(z.enum(['outbox:after-claim', 'outbox:after-publish', 'consumer:after-commit'])),
+        z.array(
+          z.enum([
+            'outbox:after-claim',
+            'outbox:after-publish',
+            'consumer:after-commit',
+            'pending:before-commit',
+          ]),
+        ),
       ),
   })
   .superRefine((env, ctx) => {
+    // A cap below the base would make the first retry throw instead of failing at startup.
+    if (env.PENDING_REFERENCE_MAX_DELAY_MS < env.PENDING_REFERENCE_BASE_DELAY_MS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['PENDING_REFERENCE_MAX_DELAY_MS'],
+        message: 'Must be greater than or equal to PENDING_REFERENCE_BASE_DELAY_MS',
+      });
+    }
     // A crash switch must never be armed in production, not even by mistake.
     if (env.NODE_ENV === 'production' && env.FAULT_INJECTION.length > 0) {
       ctx.addIssue({

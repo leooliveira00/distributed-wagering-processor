@@ -92,6 +92,8 @@ Um teste adicional coloca **2 processos consumidores e 1 processo de API** sobre
 
 Os testes de resiliência (`bun run test:resilience`, exigem `docker compose up -d postgres sqs`) sobem processos reais da aplicação com `FAULT_INJECTION` e os matam com SIGKILL em pontos exatos: logo após reservar eventos da outbox, logo após publicar sem marcar e **logo após o commit de uma mensagem consumida, antes do ack**. Outra instância assume; o inbox e a deduplicação por `eventId` garantem um único efeito. `FAULT_INJECTION` é recusado quando `NODE_ENV=production`.
 
+Um teste de ponta a ponta (README §13.7) envia pela fila, no mesmo grupo FIFO, **REFUND, ROLLBACK e uma cadeia ROLLBACK → WIN antes das transações que referenciam**, com 1 processo consumidor e **2 processos do worker de pendências**: todas as reversões ficam `PENDING_REFERENCE`, são resolvidas quando a referência chega e a órfã termina `REJECTED / REFERENCE_NOT_FOUND`. Outro teste mata o worker com SIGKILL depois de aplicar o crédito e antes do commit: nada da tentativa sobrevive e outra instância resolve a transação uma única vez.
+
 Os testes de integração do consumidor (`test/integration/sqs`) usam filas FIFO descartáveis com DLQ e redrive próprias e cobrem ack, redelivery, rejeição de negócio, conflito, DLQ imediata, retry com backoff, esgotamento de tentativas e SIGTERM.
 
 ## API
@@ -162,6 +164,20 @@ Mensagens de um mesmo `MessageGroupId` são processadas em sequência e grupos d
 
 **Coerência de timeouts:** o processamento de uma mensagem é limitado por `DATABASE_LOCK_TIMEOUT_MS` + `DATABASE_STATEMENT_TIMEOUT_MS` (5 s + 15 s), abaixo do visibility timeout da fila (30 s), e `CONSUMER_SHUTDOWN_TIMEOUT_MS` (10 s) fica abaixo do `stop_grace_period` do container (30 s). Ao alterar qualquer um desses valores, mantenha essas relações.
 
+## Referências pendentes (`PENDING_REFERENCE`)
+
+Uma transação cuja referência ainda não chegou (por exemplo, um REFUND antes da BET) é aceita como `PENDING_REFERENCE` (HTTP `202`) e reprocessada pelo worker de pendências (papel `pending`), com backoff exponencial (README §7.1):
+
+- **Limite:** `PENDING_REFERENCE_MAX_ATTEMPTS` tentativas (padrão 10, a submissão é a 1ª), com atraso de `PENDING_REFERENCE_BASE_DELAY_MS` a `PENDING_REFERENCE_MAX_DELAY_MS` (1 s a 60 s, cerca de 4 min no total). Chegada fora de ordem é questão de segundos; um limite de tentativas é determinístico e testável.
+- **Esgotado o limite:** `REJECTED` com `REFERENCE_NOT_FOUND` (a referência nunca chegou) ou `REFERENCE_NOT_PROCESSED` (existe, mas nunca foi aplicada), e o evento `WagerTransactionRejected` é publicado. `attempts` termina igual ao limite.
+- **Eventos:** `WagerTransactionPendingReference` na chegada e o resultado final; uma tentativa que continua aguardando não publica nada.
+- **Aceleração:** quando uma transação chega a um estado final, as pendências que a referenciam vencem na hora; o worker as resolve no ciclo seguinte (`PENDING_REFERENCE_POLL_INTERVAL_MS`, 500 ms), sem esperar o backoff.
+- **Concorrência:** cada tentativa é uma transação SQL: pendência travada com `FOR UPDATE SKIP LOCKED` (várias instâncias nunca pegam a mesma), depois a wallet com `FOR UPDATE`, e as mesmas regras da submissão. Se o processo morrer, o rollback devolve a pendência intacta; não há lease. A aceleração também usa `SKIP LOCKED` e nunca espera lock, o que torna as duas ordens de lock (pendência → wallet e wallet → pendência) livres de deadlock.
+- **Relógio:** agendamento e comparação de `next_attempt_at` usam o `now()` do PostgreSQL, imune à diferença de relógio entre instâncias.
+- **Falha inesperada** numa tentativa (lock timeout, bug): a pendência é adiada pelo backoff sem contar tentativa, com log de erro e `pending_reference_failures_total`, para não bloquear as demais.
+
+Reenviar uma transação que estava pendente devolve o **estado atual** dela (por exemplo, `201` depois de resolvida), com `idempotentReplay: true`.
+
 ## Configuração
 
 Variáveis de ambiente são validadas na inicialização (zod); valores inválidos impedem o boot e todos os erros são listados de uma vez. Veja `.env.example`.
@@ -170,5 +186,5 @@ Variáveis de ambiente são validadas na inicialização (zod); valores inválid
 
 - `api`: endpoints HTTP.
 - `consumer`: consome `wager-transactions.fifo` (veja [Mensageria](#mensageria-sqs)).
-
+- `pending`: reprocessa transações `PENDING_REFERENCE` (veja [Referências pendentes](#referências-pendentes-pending_reference)).
 - `outbox`: publica os eventos da outbox em `wagering-events.fifo` (`MessageGroupId = walletId`, `MessageDeduplicationId = eventId`). Lotes reservados por lease (`FOR UPDATE SKIP LOCKED`), então várias instâncias publicam em paralelo sem repetir trabalho; falhas são retentadas com backoff exponencial, sem limite (nenhum evento confirmado é descartado).

@@ -11,7 +11,9 @@ export type CounterName =
   | 'sqs_messages_processed_total'
   | 'sqs_duplicate_messages_total'
   | 'sqs_message_retries_total'
-  | 'sqs_messages_dead_lettered_total';
+  | 'sqs_messages_dead_lettered_total'
+  | 'pending_reference_attempts_total'
+  | 'pending_reference_failures_total';
 
 export type MetricLabels = Readonly<Record<string, string>>;
 

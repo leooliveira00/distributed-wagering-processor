@@ -1,4 +1,10 @@
-import { type EntityClass, type EntityManager, LockMode, type Primary } from '@mikro-orm/core';
+import {
+  type EntityClass,
+  type EntityManager,
+  LockMode,
+  type Primary,
+  type QueryResult,
+} from '@mikro-orm/core';
 import { type SqlEntityManager } from '@mikro-orm/postgresql';
 import {
   type InboxRepository,
@@ -96,7 +102,8 @@ export class MikroOrmWalletRepository implements WalletRepository {
 }
 
 export class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
-  constructor(private readonly em: EntityManager) {}
+  /** SQL-capable manager: rescheduling statements are explicit SQL in the current transaction. */
+  constructor(private readonly em: SqlEntityManager) {}
 
   async findById(id: string): Promise<WagerTransaction | undefined> {
     const record = await this.em.findOne(WagerTransactionRecord, { id });
@@ -129,6 +136,48 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
       kind: { $in: [WagerTransactionKind.Refund, WagerTransactionKind.Rollback] },
     });
     return count > 0;
+  }
+
+  async lockNextDuePending(now: Date): Promise<WagerTransaction | undefined> {
+    // Served by wager_transactions_pending_reference_idx (next_attempt_at, partial on status).
+    const record = await this.em.findOne(
+      WagerTransactionRecord,
+      { status: WagerTransactionStatus.PendingReference, nextAttemptAt: { $lte: now } },
+      {
+        orderBy: { nextAttemptAt: 'asc', id: 'asc' },
+        lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE, // FOR UPDATE SKIP LOCKED
+        refresh: true,
+      },
+    );
+    return record ? toWagerTransaction(record) : undefined;
+  }
+
+  async expediteDependents(providerId: string, externalTransactionId: string): Promise<number> {
+    // Served by wager_transactions_pending_dependents_idx. `> now()` leaves rows already due alone.
+    const result = await this.em.execute<QueryResult>(
+      `update wager_transactions
+          set next_attempt_at = now()
+        where id in (
+          select id
+            from wager_transactions
+           where status = 'PENDING_REFERENCE'
+             and provider_id = ?
+             and reference_external_transaction_id = ?
+             and next_attempt_at > now()
+             for update skip locked)`,
+      [providerId, externalTransactionId],
+      'run',
+    );
+    return result.affectedRows;
+  }
+
+  async deferPending(id: string, delayMs: number): Promise<void> {
+    await this.em.execute(
+      `update wager_transactions
+          set next_attempt_at = now() + make_interval(secs => ? / 1000.0)
+        where id = ? and status = 'PENDING_REFERENCE'`,
+      [delayMs, id],
+    );
   }
 
   add(transaction: WagerTransaction): void {
