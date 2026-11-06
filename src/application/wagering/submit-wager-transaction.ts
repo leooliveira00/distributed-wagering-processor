@@ -1,19 +1,7 @@
-import { WagerTransactionPendingReference } from '../../domain/messaging/events/wager-transaction-pending-reference';
-import { WagerTransactionProcessed } from '../../domain/messaging/events/wager-transaction-processed';
-import { WagerTransactionRejected } from '../../domain/messaging/events/wager-transaction-rejected';
-import { WalletBalanceChanged } from '../../domain/messaging/events/wallet-balance-changed';
 import { InboxMessage } from '../../domain/messaging/inbox-message';
-import { type EventContext, type IntegrationEvent } from '../../domain/messaging/integration-event';
-import { OutboxMessage } from '../../domain/messaging/outbox-message';
 import { Money } from '../../domain/money/money';
-import { nextAttemptAt } from '../../domain/shared/backoff';
+import { backoffDelayMs } from '../../domain/shared/backoff';
 import { INTERNAL_PROVIDER_ID, WagerTransaction } from '../../domain/wagering/wager-transaction';
-import {
-  type ProcessWagerOutcome,
-  WagerTransactionProcessor,
-} from '../../domain/wagering/wager-transaction-processor';
-import { WagerTransactionStatus } from '../../domain/wagering/wager-transaction-status';
-import { type Wallet } from '../../domain/wallet/wallet';
 import {
   ConflictError,
   InvalidRequestError,
@@ -31,6 +19,7 @@ import {
   type SubmitWagerCommand,
   wagerBusinessPayload,
 } from './wager-command';
+import { WagerTransactionApplier } from './wager-transaction-applier';
 import { toSubmissionResult, type WagerSubmissionResult } from './wager-views';
 
 /** Constraints whose violation means "a concurrent submission of the same thing won the race". */
@@ -49,20 +38,25 @@ const RACE_CONSTRAINTS = new Set([
  *  2. row lock on the wallet (SELECT ... FOR UPDATE): the unit of concurrency (README §8);
  *  3. idempotency lookup AFTER the lock, so a concurrent duplicate on the same wallet waits and
  *     then sees the committed original (replay) instead of racing it;
- *  4. reference resolution and domain rules (WagerTransactionProcessor);
+ *  4. reference resolution and domain rules (WagerTransactionApplier, shared with the
+ *     pending-reference worker);
  *  5. transaction, wallet, ledger entry, integration events and inbox written together.
+ * A missing reference leaves the transaction PENDING_REFERENCE, first retry scheduled on the
+ * database clock; ResolvePendingReferences takes it from there (README §7.1).
  * A duplicate that reaches the database anyway (same key, different wallet) is stopped by the
  * unique constraints and resolved by re-reading the winner.
  */
 export class SubmitWagerTransaction {
-  private readonly processor = new WagerTransactionProcessor();
+  private readonly applier: WagerTransactionApplier;
 
   constructor(
     private readonly unitOfWork: UnitOfWork,
     private readonly ids: IdGenerator,
     private readonly clock: Clock,
     private readonly pendingReference: PendingReferencePolicy,
-  ) {}
+  ) {
+    this.applier = new WagerTransactionApplier(ids);
+  }
 
   async execute(
     command: SubmitWagerCommand,
@@ -112,7 +106,7 @@ export class SubmitWagerTransaction {
     transaction: WagerTransaction,
     input: { hash: string; at: Date; context: RequestContext; inbox: InboxContext | undefined },
   ): Promise<WagerSubmissionResult> {
-    const { hash, at, inbox } = input;
+    const { hash, at, context, inbox } = input;
 
     if (inbox) {
       const seen = await scope.inbox.find(inbox.consumerName, inbox.messageId);
@@ -150,39 +144,23 @@ export class SubmitWagerTransaction {
     );
     if (sameExternal) throw externalTransactionConflict(transaction);
 
-    const reference =
-      transaction.referenceExternalTransactionId === undefined
-        ? undefined
-        : await scope.transactions.findByExternalId(
-            transaction.providerId,
-            transaction.referenceExternalTransactionId,
-          );
-    const referenceAlreadyReversed =
-      reference !== undefined && transaction.requiresReference()
-        ? await scope.transactions.hasProcessedReversal(reference.id)
-        : false;
-
-    const outcome = this.processor.process({
+    await this.applier.apply(scope, {
       transaction,
       wallet,
-      reference,
-      referenceAlreadyReversed,
-      missingReference: {
+      isNew: true,
+      // The submission is attempt 1; the worker makes the following ones (README §7.1, D11).
+      onMissingReference: {
         action: 'retry',
-        nextAttemptAt: nextAttemptAt(at, transaction.attempts + 1, this.pendingReference.backoff),
+        delayMs: backoffDelayMs(transaction.attempts + 1, this.pendingReference.backoff),
       },
-      ledgerEntryId: this.ids.next(),
       at,
+      eventContext: () => ({
+        eventId: this.ids.next(),
+        correlationId: context.correlationId,
+        causationId: inbox?.messageId ?? context.causationId,
+        occurredAt: at,
+      }),
     });
-
-    scope.transactions.add(transaction);
-    if (outcome.status === WagerTransactionStatus.Processed && outcome.ledgerEntry) {
-      scope.wallets.save(wallet);
-      scope.ledger.add(outcome.ledgerEntry);
-    }
-    for (const event of this.eventsFor(transaction, wallet, outcome, input)) {
-      scope.outbox.add(OutboxMessage.enqueue(event));
-    }
     this.recordInbox(scope, inbox, hash, at);
     return toSubmissionResult(transaction, false);
   }
@@ -209,33 +187,6 @@ export class SubmitWagerTransaction {
       },
       { readOnly: true },
     );
-  }
-
-  private eventsFor(
-    transaction: WagerTransaction,
-    wallet: Wallet,
-    outcome: ProcessWagerOutcome,
-    input: { at: Date; context: RequestContext; inbox: InboxContext | undefined },
-  ): IntegrationEvent<unknown>[] {
-    const ctx = (): EventContext => ({
-      eventId: this.ids.next(),
-      correlationId: input.context.correlationId,
-      causationId: input.inbox?.messageId ?? input.context.causationId,
-      occurredAt: input.at,
-    });
-    switch (outcome.status) {
-      case WagerTransactionStatus.Processed:
-        return [
-          WagerTransactionProcessed.from(transaction, ctx()),
-          ...(outcome.ledgerEntry
-            ? [WalletBalanceChanged.from(wallet, outcome.ledgerEntry, ctx())]
-            : []),
-        ];
-      case WagerTransactionStatus.Rejected:
-        return [WagerTransactionRejected.from(transaction, ctx())];
-      case WagerTransactionStatus.PendingReference:
-        return [WagerTransactionPendingReference.from(transaction, ctx())];
-    }
   }
 
   private recordInbox(
