@@ -13,6 +13,10 @@ import { z } from 'zod';
 import { ID_GENERATOR, type IdGenerator } from '../../../application/ports/system';
 import { CreateWallet } from '../../../application/wallets/create-wallet';
 import {
+  ReconcileWallet,
+  type ReconciliationView,
+} from '../../../application/wallets/reconcile-wallet';
+import {
   GetWallet,
   LEDGER_PAGE_DEFAULT,
   LEDGER_PAGE_MAX,
@@ -43,6 +47,7 @@ export class WalletsController {
     private readonly createWallet: CreateWallet,
     private readonly getWallet: GetWallet,
     private readonly listLedger: ListWalletLedger,
+    private readonly reconcileWallet: ReconcileWallet,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
   ) {}
 
@@ -69,5 +74,12 @@ export class WalletsController {
       cursor,
       limit,
     });
+  }
+
+  /** 200 even when inconsistent: the check succeeded; the divergence is reported in the body. */
+  @Post(':walletId/reconciliation')
+  @HttpCode(200)
+  reconcile(@Param('walletId') walletId: string): Promise<ReconciliationView> {
+    return this.reconcileWallet.execute(parseInput(walletIdSchema, walletId));
   }
 }

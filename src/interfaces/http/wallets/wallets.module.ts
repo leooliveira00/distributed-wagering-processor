@@ -6,7 +6,10 @@ import {
   type IdGenerator,
 } from '../../../application/ports/system';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../application/ports/unit-of-work';
+import { APP_LOGGER, type AppLogger } from '../../../application/ports/logger';
+import { METRICS, type Metrics } from '../../../application/ports/metrics';
 import { CreateWallet } from '../../../application/wallets/create-wallet';
+import { ReconcileWallet } from '../../../application/wallets/reconcile-wallet';
 import { GetWallet, ListWalletLedger } from '../../../application/wallets/wallet-queries';
 import { WalletsController } from './wallets.controller';
 
@@ -31,6 +34,12 @@ import { WalletsController } from './wallets.controller';
       provide: ListWalletLedger,
       inject: [UNIT_OF_WORK],
       useFactory: (unitOfWork: UnitOfWork) => new ListWalletLedger(unitOfWork),
+    },
+    {
+      provide: ReconcileWallet,
+      inject: [UNIT_OF_WORK, METRICS, APP_LOGGER],
+      useFactory: (unitOfWork: UnitOfWork, metrics: Metrics, logger: AppLogger) =>
+        new ReconcileWallet(unitOfWork, metrics, logger),
     },
   ],
 })
