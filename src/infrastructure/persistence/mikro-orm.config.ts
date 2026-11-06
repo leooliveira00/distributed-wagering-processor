@@ -24,6 +24,12 @@ export function buildMikroOrmConfig(env: Env): Options {
     user: env.DATABASE_USER,
     password: env.DATABASE_PASSWORD,
     pool: { min: 0, max: env.DATABASE_POOL_MAX },
+    // Sent by `pg` as startup parameters of every pooled connection: a hot wallet can never make
+    // a request wait indefinitely for the row lock.
+    driverOptions: {
+      lock_timeout: env.DATABASE_LOCK_TIMEOUT_MS,
+      statement_timeout: env.DATABASE_STATEMENT_TIMEOUT_MS,
+    },
     entities: entitySchemas,
     discovery: { warnWhenNoEntities: false },
     extensions: [Migrator],

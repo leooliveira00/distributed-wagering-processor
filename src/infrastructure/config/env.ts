@@ -28,6 +28,14 @@ const envSchema = z.object({
   DATABASE_USER: z.string().min(1).default('wagering'),
   DATABASE_PASSWORD: z.string().min(1).default('wagering'),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).default(20),
+  /** Max wait for a row lock (hot wallet); exceeding it is a transient failure (503 / retry). */
+  DATABASE_LOCK_TIMEOUT_MS: z.coerce.number().int().min(1).default(5_000),
+  DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(1).default(15_000),
+
+  /** PENDING_REFERENCE retries (D11): exponential backoff from base to cap, then REJECTED. */
+  PENDING_REFERENCE_BASE_DELAY_MS: z.coerce.number().int().min(1).default(1_000),
+  PENDING_REFERENCE_MAX_DELAY_MS: z.coerce.number().int().min(1).default(60_000),
+  PENDING_REFERENCE_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(10),
 
   AWS_REGION: z.string().min(1).default('us-east-1'),
   AWS_ENDPOINT_URL: z.url().optional(),

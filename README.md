@@ -68,6 +68,7 @@ bun run dev
 | `bun test`                                               | Todas as suítes                                 |
 | `bun run test:unit`                                      | Testes de unidade (sem infraestrutura)          |
 | `bun run test:integration`                               | Testes de integração (PostgreSQL real)          |
+| `bun run test:concurrency`                               | Paralelismo real, inclusive 3 processos         |
 | `bun run migrate:up` / `migrate:down` / `migrate:status` | Migrations (reversíveis, uma por vez no `down`) |
 | `bun run sqs:bootstrap`                                  | Cria as filas no emulador                       |
 
@@ -81,6 +82,8 @@ bun run test:integration
 ```
 
 Cada suíte cria e migra um banco descartável próprio (`wagering_test_<suite>`), então os testes não dependem de limpeza nem interferem nos dados de desenvolvimento.
+
+Os testes de concorrência (`bun run test:concurrency`) disparam requisições realmente paralelas contra uma instância e contra **3 processos independentes** (`bun src/main.ts`) que compartilham apenas o PostgreSQL. Cobrem: a mesma aposta 50× em paralelo (um único débito), o cenário obrigatório de duas apostas de `80.00` sobre `100.00`, uma hot wallet com 30 apostas concorrentes e wallets independentes em paralelo. Todos terminam verificando `saldo == saldo reconstruído pelo ledger`.
 
 ## API
 
