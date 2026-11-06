@@ -10,6 +10,14 @@ const COUNTERS: Readonly<Record<CounterName, { help: string; labels: readonly st
     help: 'Reconciliations where the stored balance differs from the ledger',
     labels: [],
   },
+  outbox_events_published_total: {
+    help: 'Integration events published from the outbox',
+    labels: [],
+  },
+  outbox_publish_failures_total: {
+    help: 'Failed outbox publication attempts (retried with backoff)',
+    labels: ['eventType'],
+  },
 };
 
 /** prom-client adapter with its own registry (no global state shared between tests). */
