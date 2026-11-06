@@ -15,6 +15,7 @@ const props = (overrides: Partial<CreateLedgerEntryProps> = {}): CreateLedgerEnt
   money: brl('25.00'),
   balanceBefore: brl('100.00'),
   balanceAfter: brl('75.00'),
+  walletVersion: 2,
   createdAt: AT,
   ...overrides,
 });
@@ -55,6 +56,12 @@ describe('WalletLedgerEntry.create', () => {
     ['negative', brl('25.00').negate()],
   ])('rejects a %s amount', (_, money) => {
     expect(() => WalletLedgerEntry.create(props({ money }))).toThrow(InvalidLedgerEntryError);
+  });
+
+  it.each([0, -1, 1.5])('rejects wallet version %p', (walletVersion) => {
+    expect(() => WalletLedgerEntry.create(props({ walletVersion }))).toThrow(
+      InvalidLedgerEntryError,
+    );
   });
 
   it('rejects a negative resulting balance', () => {

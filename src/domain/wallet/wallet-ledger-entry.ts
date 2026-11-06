@@ -10,6 +10,8 @@ export interface CreateLedgerEntryProps {
   money: Money;
   balanceBefore: Money;
   balanceAfter: Money;
+  /** Wallet version this entry produced. One entry per version makes the ledger a chain. */
+  walletVersion: number;
   createdAt: Date;
 }
 
@@ -28,6 +30,7 @@ export class WalletLedgerEntry {
     public readonly money: Money,
     public readonly balanceBefore: Money,
     public readonly balanceAfter: Money,
+    public readonly walletVersion: number,
     public readonly createdAt: Date,
   ) {
     Object.freeze(this);
@@ -44,6 +47,9 @@ export class WalletLedgerEntry {
     }
     if (balanceBefore.isNegative() || balanceAfter.isNegative()) {
       throw new InvalidLedgerEntryError('Ledger entry balances cannot be negative');
+    }
+    if (!Number.isInteger(props.walletVersion) || props.walletVersion < 1) {
+      throw new InvalidLedgerEntryError('Ledger entry wallet version must be a positive integer');
     }
 
     const entry = WalletLedgerEntry.rehydrate(props);
@@ -65,6 +71,7 @@ export class WalletLedgerEntry {
       state.money,
       state.balanceBefore,
       state.balanceAfter,
+      state.walletVersion,
       new Date(state.createdAt),
     );
   }
