@@ -82,6 +82,24 @@ bun run test:integration
 
 Cada suíte cria e migra um banco descartável próprio (`wagering_test_<suite>`), então os testes não dependem de limpeza nem interferem nos dados de desenvolvimento.
 
+## API
+
+| Método e rota                            | Descrição                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------ |
+| `POST /wallets`                          | Cria a wallet; saldo inicial > 0 gera OPENING + CREDIT no ledger   |
+| `GET /wallets/:walletId`                 | Estado atual da wallet                                             |
+| `GET /wallets/:walletId/ledger`          | Ledger paginado (`?limit=1..100`, padrão 50; `cursor` opaco)       |
+| `POST /wallets/:walletId/reconciliation` | Compara saldo armazenado com o ledger; divergência não é corrigida |
+| `GET /health/live`                       | Liveness (sem autenticação)                                        |
+
+```bash
+curl -X POST http://localhost:3000/wallets \
+  -H 'content-type: application/json' \
+  -d '{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}'
+```
+
+Erros têm sempre o formato `{ "error": { "code", "message", "retryable" } }`: `400` contrato inválido, `404` inexistente, `409` conflito, `503` falha transitória (com `Retry-After`), `500` erro inesperado.
+
 ## Configuração
 
 Variáveis de ambiente são validadas na inicialização (zod); valores inválidos impedem o boot e todos os erros são listados de uma vez. Veja `.env.example`.

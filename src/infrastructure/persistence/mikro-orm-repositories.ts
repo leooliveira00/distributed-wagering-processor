@@ -1,14 +1,17 @@
 import { type EntityClass, type EntityManager, LockMode, type Primary } from '@mikro-orm/core';
+import { type SqlEntityManager } from '@mikro-orm/postgresql';
 import {
   type InboxRepository,
   type LedgerPage,
   type LedgerRepository,
+  type LedgerSummary,
   type OutboxRepository,
   type WagerTransactionRepository,
   type WalletRepository,
 } from '../../application/ports/repositories';
 import { type InboxMessage } from '../../domain/messaging/inbox-message';
 import { type OutboxMessage } from '../../domain/messaging/outbox-message';
+import { Money } from '../../domain/money/money';
 import { type WagerTransaction } from '../../domain/wagering/wager-transaction';
 import { WagerTransactionKind } from '../../domain/wagering/wager-transaction-kind';
 import { WagerTransactionStatus } from '../../domain/wagering/wager-transaction-status';
@@ -166,7 +169,27 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
 }
 
 export class MikroOrmLedgerRepository implements LedgerRepository {
-  constructor(private readonly em: EntityManager) {}
+  /** SQL-capable manager: the summary is an aggregate query run in the current transaction. */
+  constructor(private readonly em: SqlEntityManager) {}
+
+  async summarize(walletId: string, currency: string): Promise<LedgerSummary> {
+    // Sums run in numeric(38,2) and come back as text, so no value ever passes through a JS number.
+    const rows = await this.em.execute<{ credits: string; debits: string; entries: number }[]>(
+      `select coalesce(sum(amount) filter (where direction = 'CREDIT'), 0)::numeric(38, 2)::text as credits,
+              coalesce(sum(amount) filter (where direction = 'DEBIT'), 0)::numeric(38, 2)::text  as debits,
+              count(*)::int as entries
+         from wallet_ledger_entries
+        where wallet_id = ?`,
+      [walletId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error('Ledger summary query returned no row');
+    return {
+      credits: Money.from({ amount: row.credits, currency }),
+      debits: Money.from({ amount: row.debits, currency }),
+      entries: row.entries,
+    };
+  }
 
   add(entry: WalletLedgerEntry): void {
     this.em.persist(

@@ -1,5 +1,10 @@
-import { OptimisticLockError, UniqueConstraintViolationException } from '@mikro-orm/core';
+import { OptimisticLockError } from '@mikro-orm/core';
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import {
+  IntegrityViolationError,
+  TransientError,
+  UniqueViolationError,
+} from '../../../src/application/errors';
 import { type UnitOfWork } from '../../../src/application/ports/unit-of-work';
 import { WalletBalanceChanged } from '../../../src/domain/messaging/events/wallet-balance-changed';
 import { InboxMessage } from '../../../src/domain/messaging/inbox-message';
@@ -114,8 +119,8 @@ describe('wallet persistence', () => {
       }),
     );
 
-    expect(error).toBeInstanceOf(UniqueConstraintViolationException);
-    expect(String(error)).toContain('wallets_player_currency_uq');
+    expect(error).toBeInstanceOf(UniqueViolationError);
+    expect((error as UniqueViolationError).constraint).toBe('wallets_player_currency_uq');
   });
 });
 
@@ -203,10 +208,10 @@ describe('balance changes', () => {
       }),
     );
 
-    // Raised by the deferred constraint trigger at COMMIT. Errors at commit time reach us as
-    // raw driver errors (SQLSTATE 23514), not as converted MikroORM exceptions.
-    expect(error).toMatchObject({ code: '23514' });
-    expect(String(error)).toContain('no matching ledger entry');
+    // Raised by the deferred constraint trigger at COMMIT as a raw driver error (SQLSTATE 23514);
+    // the unit of work translates it, keeping the original as the cause.
+    expect(error).toBeInstanceOf(IntegrityViolationError);
+    expect(String((error as IntegrityViolationError).cause)).toContain('no matching ledger entry');
     expect((await readWallet(opened.id))?.balance.toJSON().amount).toBe('100.00');
   });
 
@@ -288,8 +293,8 @@ describe('concurrency control', () => {
     const error = await captureError(staleWrite(opened.id, { withLedgerEntry: true }));
 
     // The stale entry claims wallet version 2, which the concurrent writer already used.
-    expect(error).toBeInstanceOf(UniqueConstraintViolationException);
-    expect(String(error)).toContain('wallet_ledger_entries_version_uq');
+    expect(error).toBeInstanceOf(UniqueViolationError);
+    expect((error as UniqueViolationError).constraint).toBe('wallet_ledger_entries_version_uq');
     expect((await readWallet(opened.id))?.balance.toJSON().amount).toBe('70.00');
   });
 
@@ -298,8 +303,10 @@ describe('concurrency control', () => {
 
     const error = await captureError(staleWrite(opened.id, { withLedgerEntry: false }));
 
-    // UPDATE ... WHERE version = 1 matches no row: the ORM raises an optimistic lock error.
-    expect(error).toBeInstanceOf(OptimisticLockError);
+    // UPDATE ... WHERE version = 1 matches no row: the ORM raises an optimistic lock error,
+    // surfaced as a transient failure (safe to retry with fresh state).
+    expect(error).toBeInstanceOf(TransientError);
+    expect((error as TransientError).cause).toBeInstanceOf(OptimisticLockError);
     expect((await readWallet(opened.id))?.balance.toJSON().amount).toBe('70.00');
   });
 });
@@ -432,8 +439,8 @@ describe('inbox and outbox', () => {
         return Promise.resolve();
       }),
     );
-    expect(error).toBeInstanceOf(UniqueConstraintViolationException);
-    expect(String(error)).toContain('inbox_messages_pk');
+    expect(error).toBeInstanceOf(UniqueViolationError);
+    expect((error as UniqueViolationError).constraint).toBe('inbox_messages_pk');
   });
 
   it('stores the outbox event envelope as jsonb in the same commit as the balance change', async () => {
