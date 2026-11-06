@@ -16,7 +16,9 @@ Serviço financeiro distribuído que processa transações de apostas (`BET`, `W
 | Mensageria                             | AWS SQS via [MiniStack](https://github.com/ministackorg/ministack) |
 | Orquestração local                     | Docker Compose                                                     |
 
-> **Por que MiniStack e não LocalStack?** As imagens atuais do LocalStack exigem `LOCALSTACK_AUTH_TOKEN` (conta) para iniciar. O MiniStack é gratuito, open source (MIT), expõe a mesma API SQS na porta `4566` e é aceito pelo enunciado. A criação de filas usa apenas o AWS SDK, então trocar de emulador (ou usar AWS real) é só trocar o endpoint.
+> **Por que MiniStack e não LocalStack?** As imagens atuais do LocalStack exigem `LOCALSTACK_AUTH_TOKEN` (conta) para iniciar. O MiniStack é gratuito, open source (MIT), expõe a mesma API SQS na porta `4566` e é aceito pelo enunciado. A criação de filas usa apenas o AWS SDK, então trocar de emulador (ou usar AWS real) é só trocar o endpoint. A suíte `test/integration/sqs/emulator-contract.test.ts` verifica no emulador os 7 comportamentos de SQS dos quais o sistema depende (deduplicação, ordem FIFO, bloqueio de grupo, expiração de visibilidade, `ChangeMessageVisibility(0)`, ack e redrive para a DLQ).
+>
+> Para usar LocalStack com um token: `LOCALSTACK_AUTH_TOKEN=<token> docker compose -f docker-compose.yml -f docker-compose.localstack.yml up -d` e, em seguida, rode a suíte de contrato. O override foi validado sintaticamente; sem um token disponível, não foi executado contra o LocalStack.
 
 ## Pré-requisitos
 
@@ -86,17 +88,24 @@ Cada suíte cria e migra um banco descartável próprio (`wagering_test_<suite>`
 
 Os testes de concorrência (`bun run test:concurrency`) disparam requisições realmente paralelas contra uma instância e contra **3 processos independentes** (`bun src/main.ts`) que compartilham apenas o PostgreSQL. Cobrem: a mesma aposta 50× em paralelo (um único débito), o cenário obrigatório de duas apostas de `80.00` sobre `100.00`, uma hot wallet com 30 apostas concorrentes e wallets independentes em paralelo. Todos terminam verificando `saldo == saldo reconstruído pelo ledger`.
 
-Os testes de resiliência (`bun run test:resilience`, exigem `docker compose up -d postgres sqs`) sobem processos reais da aplicação com `FAULT_INJECTION` e os matam com SIGKILL em pontos exatos: logo após reservar eventos da outbox e logo após publicar sem marcar. Outra instância assume e publica tudo; a duplicata é descartada pela deduplicação por `eventId`. `FAULT_INJECTION` é recusado quando `NODE_ENV=production`.
+Um teste adicional coloca **2 processos consumidores e 1 processo de API** sobre a **mesma wallet**, cada operação entregue duas vezes: 60 apostas de `2.00` sobre `100.00` terminam com exatamente 50 processadas, 10 rejeitadas e saldo `0.00`.
+
+Os testes de resiliência (`bun run test:resilience`, exigem `docker compose up -d postgres sqs`) sobem processos reais da aplicação com `FAULT_INJECTION` e os matam com SIGKILL em pontos exatos: logo após reservar eventos da outbox, logo após publicar sem marcar e **logo após o commit de uma mensagem consumida, antes do ack**. Outra instância assume; o inbox e a deduplicação por `eventId` garantem um único efeito. `FAULT_INJECTION` é recusado quando `NODE_ENV=production`.
+
+Os testes de integração do consumidor (`test/integration/sqs`) usam filas FIFO descartáveis com DLQ e redrive próprias e cobrem ack, redelivery, rejeição de negócio, conflito, DLQ imediata, retry com backoff, esgotamento de tentativas e SIGTERM.
 
 ## API
 
-| Método e rota                            | Descrição                                                          |
-| ---------------------------------------- | ------------------------------------------------------------------ |
-| `POST /wallets`                          | Cria a wallet; saldo inicial > 0 gera OPENING + CREDIT no ledger   |
-| `GET /wallets/:walletId`                 | Estado atual da wallet                                             |
-| `GET /wallets/:walletId/ledger`          | Ledger paginado (`?limit=1..100`, padrão 50; `cursor` opaco)       |
-| `POST /wallets/:walletId/reconciliation` | Compara saldo armazenado com o ledger; divergência não é corrigida |
-| `GET /health/live`                       | Liveness (sem autenticação)                                        |
+| Método e rota                                                             | Descrição                                                                         |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `POST /wallets`                                                           | Cria a wallet; saldo inicial > 0 gera OPENING + CREDIT no ledger                  |
+| `GET /wallets/:walletId`                                                  | Estado atual da wallet                                                            |
+| `GET /wallets/:walletId/ledger`                                           | Ledger paginado (`?limit=1..100`, padrão 50; `cursor` opaco)                      |
+| `POST /wallets/:walletId/reconciliation`                                  | Compara saldo armazenado com o ledger; divergência não é corrigida                |
+| `POST /wagering/transactions`                                             | Submete BET, WIN, LOSS, REFUND ou ROLLBACK (header `Idempotency-Key` obrigatório) |
+| `GET /wagering/transactions/:transactionId`                               | Transação pelo id interno                                                         |
+| `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | Transação pelo id do provedor                                                     |
+| `GET /health/live`                                                        | Liveness (sem autenticação)                                                       |
 
 ```bash
 curl -X POST http://localhost:3000/wallets \
@@ -104,12 +113,62 @@ curl -X POST http://localhost:3000/wallets \
   -d '{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}'
 ```
 
-Erros têm sempre o formato `{ "error": { "code", "message", "retryable" } }`: `400` contrato inválido, `404` inexistente, `409` conflito, `503` falha transitória (com `Retry-After`), `500` erro inesperado.
+```bash
+curl -X POST http://localhost:3000/wagering/transactions \
+  -H 'content-type: application/json' \
+  -H 'Idempotency-Key: provider-a:transaction-123' \
+  -d '{"providerId":"provider-a","externalTransactionId":"transaction-123","playerId":"<playerId>","walletId":"<walletId>","roundId":"round-987","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}'
+```
+
+| Situação                                       | Status                    |
+| ---------------------------------------------- | ------------------------- |
+| Processada                                     | `201`                     |
+| Aceita, aguardando a transação referenciada    | `202`                     |
+| Rejeitada por regra de negócio (`failureCode`) | `422`                     |
+| Conflito de idempotência                       | `409`                     |
+| Contrato inválido                              | `400`                     |
+| Wallet ou transação inexistente                | `404`                     |
+| Falha transitória                              | `503` (com `Retry-After`) |
+
+Um reenvio idêntico devolve o mesmo status e corpo, com `idempotentReplay: true` e o saldo observado na primeira vez. Erros têm sempre o envelope `{ "error": { "code", "message", "retryable" } }`; a resposta `422` traz também os dados da transação rejeitada (que fica gravada e auditável).
+
+## Mensageria (SQS)
+
+Mensagens em `wager-transactions.fifo` seguem o envelope abaixo e passam pelo **mesmo caso de uso e pelo mesmo contrato** da API. O `messageId` do envelope é a chave do inbox persistente.
+
+```json
+{
+  "messageId": "msg-123",
+  "type": "WagerTransactionRequested",
+  "occurredAt": "2026-07-29T15:00:00.000Z",
+  "data": {
+    "providerId": "provider-a",
+    "externalTransactionId": "transaction-123",
+    "idempotencyKey": "provider-a:transaction-123",
+    "...": "mesmos campos do POST"
+  }
+}
+```
+
+| Resultado                                                          | Ação do consumidor                                         |
+| ------------------------------------------------------------------ | ---------------------------------------------------------- |
+| Processada, pendente de referência ou rejeitada (inclusive replay) | ack (`DeleteMessage`), somente após o commit               |
+| Conflito de idempotência                                           | ack + log                                                  |
+| Contrato inválido, JSON malformado ou wallet inexistente           | DLQ imediata, com `deadLetterReason` e `errorCode`         |
+| Falha transitória ou inesperada                                    | sem ack; nova tentativa com backoff via visibility timeout |
+| Tentativas esgotadas (`SQS_MAX_RECEIVE_COUNT`)                     | DLQ pela redrive policy da fila                            |
+
+Mensagens de um mesmo `MessageGroupId` são processadas em sequência e grupos diferentes em paralelo. Em `SIGTERM`, o consumidor para de receber, conclui as mensagens em andamento por até `CONSUMER_SHUTDOWN_TIMEOUT_MS` e devolve imediatamente as demais à fila.
+
+**Coerência de timeouts:** o processamento de uma mensagem é limitado por `DATABASE_LOCK_TIMEOUT_MS` + `DATABASE_STATEMENT_TIMEOUT_MS` (5 s + 15 s), abaixo do visibility timeout da fila (30 s), e `CONSUMER_SHUTDOWN_TIMEOUT_MS` (10 s) fica abaixo do `stop_grace_period` do container (30 s). Ao alterar qualquer um desses valores, mantenha essas relações.
 
 ## Configuração
 
 Variáveis de ambiente são validadas na inicialização (zod); valores inválidos impedem o boot e todos os erros são listados de uma vez. Veja `.env.example`.
 
 `APP_ROLES` define quais papéis a instância executa (`api`, `consumer`, `outbox`, `pending`). Por padrão, todos.
+
+- `api`: endpoints HTTP.
+- `consumer`: consome `wager-transactions.fifo` (veja [Mensageria](#mensageria-sqs)).
 
 - `outbox`: publica os eventos da outbox em `wagering-events.fifo` (`MessageGroupId = walletId`, `MessageDeduplicationId = eventId`). Lotes reservados por lease (`FOR UPDATE SKIP LOCKED`), então várias instâncias publicam em paralelo sem repetir trabalho; falhas são retentadas com backoff exponencial, sem limite (nenhum evento confirmado é descartado).
