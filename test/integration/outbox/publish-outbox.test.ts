@@ -228,12 +228,13 @@ describe('PublishOutbox', () => {
     const eventIds = await f.seed(1, 0); // the 2 opening events
     let failuresLeft = eventIds.length * 2; // every event fails twice
     const flaky: MessagePublisher = {
-      publish(message: OutboxMessage) {
+      maxBatchSize: f.publisher.maxBatchSize,
+      publishBatch(messages: readonly OutboxMessage[]) {
         if (failuresLeft > 0) {
-          failuresLeft--;
+          failuresLeft -= messages.length;
           return Promise.reject(new Error('broker unavailable'));
         }
-        return f.publisher.publish(message);
+        return f.publisher.publishBatch(messages);
       },
     };
     const publisher = f.newPublisher({ publisher: flaky });
@@ -260,5 +261,56 @@ describe('PublishOutbox', () => {
         eventType: 'WalletBalanceChanged',
       }),
     ).toBe(2);
+  }, 30_000);
+
+  it('publishes in broker batches: one call per chunk, never more than the batch size', async () => {
+    const f = await setup('batches');
+    const eventIds = await f.seed(2, 5); // 2 * (2 + 5 * 2) = 24 events
+    const calls: number[] = [];
+    const counting: MessagePublisher = {
+      maxBatchSize: f.publisher.maxBatchSize,
+      publishBatch(messages: readonly OutboxMessage[]) {
+        calls.push(messages.length);
+        return f.publisher.publishBatch(messages);
+      },
+    };
+
+    const result = await f.newPublisher({ publisher: counting }).runOnce();
+    const received = await f.queue.drain();
+
+    expect(result).toEqual({ claimed: 24, published: 24, failed: 0 });
+    expect(calls).toEqual([10, 10, 4]); // 3 round trips instead of 24
+    expect(received.map((message) => eventIdOf(message.body)).sort()).toEqual([...eventIds].sort());
+  }, 30_000);
+
+  it('marks only what the broker confirmed when a batch fails partially', async () => {
+    const f = await setup('partial');
+    const eventIds = await f.seed(1, 2); // 6 events, one chunk
+    const rejected = eventIds[3];
+    if (rejected === undefined) throw new Error('seed produced fewer events than expected');
+    let rejectOnce = true;
+    // The broker accepts the batch but rejects one entry, as SendMessageBatch can.
+    const partial: MessagePublisher = {
+      maxBatchSize: f.publisher.maxBatchSize,
+      async publishBatch(messages: readonly OutboxMessage[]) {
+        if (!rejectOnce) return f.publisher.publishBatch(messages);
+        rejectOnce = false;
+        await f.publisher.publishBatch(messages.filter((message) => message.id !== rejected));
+        return { failed: [{ messageId: rejected, error: 'InternalError' }] };
+      },
+    };
+    const publisher = f.newPublisher({ publisher: partial });
+
+    const first = await publisher.runOnce();
+    const afterFirst = await f.outboxState();
+    await Bun.sleep(350); // past the first backoff (200 ms)
+    const second = await publisher.runOnce();
+    const received = await f.queue.drain();
+
+    expect(first).toEqual({ claimed: 6, published: 5, failed: 1 });
+    expect(afterFirst.filter((row) => !row.published).map((row) => row.id)).toEqual([rejected]);
+    expect(afterFirst.find((row) => row.id === rejected)?.attempts).toBe(1);
+    expect(second).toEqual({ claimed: 1, published: 1, failed: 0 });
+    expect(received.map((message) => eventIdOf(message.body)).sort()).toEqual([...eventIds].sort());
   }, 30_000);
 });

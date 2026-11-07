@@ -1,3 +1,4 @@
+import { type OutboxMessage } from '../../domain/messaging/outbox-message';
 import { backoffDelayMs, type BackoffPolicy } from '../../domain/shared/backoff';
 import { type FaultInjector } from '../ports/fault-injector';
 import { type AppLogger } from '../ports/logger';
@@ -22,8 +23,10 @@ export interface PublishOutboxResult {
  * One publishing pass (README §11).
  *
  * 1. Lease a batch in a short transaction (committed before any network call).
- * 2. Publish each message, in occurrence order.
- * 3. Mark the published ones in one statement; schedule a backoff retry for the failures.
+ * 2. Publish it in occurrence order, in chunks of the publisher's batch size (one broker round
+ *    trip per chunk, not per message).
+ * 3. Mark the confirmed ones in one statement; schedule a backoff retry for the rest. A message
+ *    is marked only when the broker confirmed it.
  *
  * Crash windows are all safe: dying after the claim leaves messages leased until the lease
  * expires, then another instance takes them; dying after publishing but before marking leads to a
@@ -50,37 +53,58 @@ export class PublishOutbox {
 
     const published: string[] = [];
     let failed = 0;
-    for (const message of batch) {
-      try {
-        await this.publisher.publish(message);
-      } catch (error) {
-        failed++;
-        message.scheduleRetry(this.clock.now(), this.options.retry);
-        const delayMs = backoffDelayMs(message.attempts, this.options.retry);
-        await this.unitOfWork.run((scope) => scope.outbox.saveRetry(message, delayMs));
-        this.metrics.increment('outbox_publish_failures_total', { eventType: message.eventType });
-        this.logger.warn('Outbox publication failed, retry scheduled', {
-          eventId: message.id,
-          eventType: message.eventType,
-          attempts: message.attempts,
-          nextAttemptAt: message.nextAttemptAt?.toISOString(),
-          error: error instanceof Error ? error.message : String(error),
-        });
-        continue;
+    const size = Math.max(1, this.publisher.maxBatchSize);
+    for (let start = 0; start < batch.length; start += size) {
+      const chunk = batch.slice(start, start + size);
+      const failures = await this.publishChunk(chunk);
+      // Outside any try: a crash here is the process dying after the broker accepted something
+      // and before it was marked, not a failed publication.
+      if (failures.size < chunk.length) this.faults.trigger('outbox:after-publish');
+
+      for (const message of chunk) {
+        const failure = failures.get(message.id);
+        if (failure !== undefined) {
+          failed++;
+          await this.scheduleRetry(message, failure);
+          continue;
+        }
+        published.push(message.id);
+        // Commit-to-broker delay. occurredAt comes from the instance that committed the event,
+        // so clock skew between instances shifts it slightly: a trend indicator, not exact.
+        this.metrics.observe(
+          'outbox_publish_delay_seconds',
+          Math.max(0, this.clock.now().getTime() - message.occurredAt.getTime()) / 1000,
+        );
       }
-      // Outside the try: a crash here is the process dying, not a failed publication.
-      this.faults.trigger('outbox:after-publish');
-      published.push(message.id);
-      // Commit-to-broker delay. occurredAt comes from the instance that committed the event, so
-      // clock skew between instances shifts it slightly: a trend indicator, not an exact figure.
-      this.metrics.observe(
-        'outbox_publish_delay_seconds',
-        Math.max(0, this.clock.now().getTime() - message.occurredAt.getTime()) / 1000,
-      );
     }
 
     await this.unitOfWork.run((scope) => scope.outbox.markPublished(published, this.clock.now()));
     this.metrics.increment('outbox_events_published_total', {}, published.length);
     return { claimed: batch.length, published: published.length, failed };
+  }
+
+  /** Reason per message the broker did not confirm; a failed call fails the whole chunk. */
+  private async publishChunk(chunk: readonly OutboxMessage[]): Promise<Map<string, string>> {
+    try {
+      const { failed } = await this.publisher.publishBatch(chunk);
+      return new Map(failed.map((failure) => [failure.messageId, failure.error]));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return new Map(chunk.map((message) => [message.id, reason]));
+    }
+  }
+
+  private async scheduleRetry(message: OutboxMessage, error: string): Promise<void> {
+    message.scheduleRetry(this.clock.now(), this.options.retry);
+    const delayMs = backoffDelayMs(message.attempts, this.options.retry);
+    await this.unitOfWork.run((scope) => scope.outbox.saveRetry(message, delayMs));
+    this.metrics.increment('outbox_publish_failures_total', { eventType: message.eventType });
+    this.logger.warn('Outbox publication failed, retry scheduled', {
+      eventId: message.id,
+      eventType: message.eventType,
+      attempts: message.attempts,
+      nextAttemptAt: message.nextAttemptAt?.toISOString(),
+      error,
+    });
   }
 }
