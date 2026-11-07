@@ -36,6 +36,9 @@ export function buildPinoHttpOptions(env: Env): Options {
     // The single source of context fields (no customProps: it would bind them a second time).
     // Every line written inside a scope carries them; explicit fields of a line win.
     mixin: (mergeObject) => ({ ...logContextFor(mergeObject) }),
-    autoLogging: { ignore: (req) => req.url?.startsWith('/health') ?? false },
+    // Probes and scrapes run every few seconds: logging each one would drown the real traffic.
+    autoLogging: {
+      ignore: (req) => (req.url?.startsWith('/health') ?? false) || req.url === '/metrics',
+    },
   };
 }
