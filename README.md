@@ -1,5 +1,7 @@
 # Distributed Wagering Processor
 
+[![CI](https://github.com/leooliveira00/distributed-wagering-processor/actions/workflows/ci.yml/badge.svg)](https://github.com/leooliveira00/distributed-wagering-processor/actions/workflows/ci.yml)
+
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) recebidas de múltiplos provedores de jogos, via HTTP e SQS, mantendo correção financeira sob entregas duplicadas, fora de ordem e concorrentes entre múltiplas instâncias.
 
 Decisões, garantias, trade-offs e limitações estão em [`ARCHITECTURE.md`](ARCHITECTURE.md). Este README cobre setup, comandos, testes, API e uma [demo guiada](#demo-guiada).

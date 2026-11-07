@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+# Least privilege: the workflow only reads the repository and uses no secrets.
+permissions:
+  contents: read
+
+# A newer run of the same branch makes the older one pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Typecheck, lint, format and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run format:check
+      - run: bun run test:unit
+
+  tests:
+    name: Full test suite (PostgreSQL and SQS)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The same images and versions as docker-compose.yml, on the same host ports, so the suites
+    # run with their defaults: nothing here differs from a local `docker compose up -d postgres sqs`.
+    services:
+      postgres:
+        image: postgres:18.6-alpine
+        env:
+          POSTGRES_DB: wagering
+          POSTGRES_USER: wagering
+          POSTGRES_PASSWORD: wagering
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U wagering -d wagering"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      sqs:
+        image: ministackorg/ministack:1.5.38
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4566/_ministack/health')\""
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      # Unit, integration, concurrency and resilience suites; each creates its own databases and
+      # queues, and the concurrency and resilience ones spawn real application processes.
+      - run: bun test
