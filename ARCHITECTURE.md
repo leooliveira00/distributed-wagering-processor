@@ -121,6 +121,7 @@ Ele é **lógica pura de domínio**: altera os agregados e devolve o resultado, 
 | `WalletBalanceChanged`             | **somente** quando há lançamento no ledger                     |
 | `WagerTransactionRejected`         | rejeição por regra de negócio (inclusive tentativas esgotadas) |
 | `WagerTransactionPendingReference` | ao entrar em `PENDING_REFERENCE` (não a cada nova tentativa)   |
+| `WagerTransactionFailed`           | ao entrar em `FAILED` (além dos eventos mínimos do enunciado)  |
 
 ---
 
@@ -252,7 +253,10 @@ Uma operação cuja referência ainda não chegou é gravada como `PENDING_REFER
 - um crash desfaz tudo, e a transação volta a ficar pendente. Como não há chamada de rede dentro da transação, não é preciso lease;
 - o backoff é exponencial, de 1 s até 60 s, com **10 tentativas** em cerca de 4 minutos (D11). A submissão conta como a 1ª tentativa;
 - esgotadas as tentativas, a transação é rejeitada com `REFERENCE_NOT_FOUND`, ou `REFERENCE_NOT_PROCESSED` quando a referência existe mas não foi aplicada, e `WagerTransactionRejected` é publicado;
-- quando a referência chega, a submissão **antecipa** as pendentes que dependiam dela (`next_attempt_at = now()`, com `SKIP LOCKED`), para que não esperem o próximo backoff.
+- quando a referência chega, a submissão **antecipa** as pendentes que dependiam dela (`next_attempt_at = now()`, com `SKIP LOCKED`), para que não esperem o próximo backoff;
+- **uma tentativa que falha por erro** é reagendada sem contar como busca pela referência, e o tratamento depende do tipo de falha:
+  - **falha transitória** (lock timeout, banco inalcançável): nunca é contada, porque uma queda não pode levar transações válidas a `FAILED`;
+  - **qualquer outra falha** (um bug, dado inválido), que se repetiria para sempre: é contada em `processing_failures`. Ao atingir `PENDING_REFERENCE_MAX_PROCESSING_FAILURES` (padrão 3), a transação vira **`FAILED / PROCESSING_FAILED`**, que é terminal e auditável, e `WagerTransactionFailed` é publicado na mesma transação SQL. Sem isso, ela ficaria em loop eterno.
 
 ### Destino dos eventos (D10)
 
@@ -275,6 +279,7 @@ Todos os endpoints usam o mesmo mapeamento (`toHttpError`) e o mesmo envelope de
 | Rejeitada por regra de negócio                                  | `422`       | o `failureCode` (tabela abaixo)                                                                           | não: a transação fica gravada e auditável |
 | Falha transitória de infraestrutura                             | `503`       | `SERVICE_UNAVAILABLE` (com `Retry-After`)                                                                 | **sim**, com a mesma key                  |
 | Erro inesperado ou violação de integridade                      | `500`       | `INTERNAL_ERROR`, `INTEGRITY_VIOLATION`                                                                   | não (é um bug)                            |
+| Replay de uma transação que terminou `FAILED`                   | `500`       | `PROCESSING_FAILED` (o corpo traz a transação)                                                            | não: falhou de forma definitiva           |
 
 A resposta `422` traz o envelope de erro **e** os dados da transação rejeitada. Um replay devolve o mesmo status da primeira resposta.
 
@@ -282,19 +287,19 @@ A resposta `422` traz o envelope de erro **e** os dados da transação rejeitada
 
 São os motivos estáveis gravados nas transações `REJECTED` (e `FAILED`):
 
-| `failureCode`                 | Regra | Significado                                                                      |
-| ----------------------------- | ----- | -------------------------------------------------------------------------------- |
-| `PLAYER_WALLET_MISMATCH`      | §7    | o jogador não é o dono da wallet                                                 |
-| `CURRENCY_MISMATCH`           | §7    | moeda da operação diferente da moeda da wallet                                   |
-| `INSUFFICIENT_FUNDS`          | §7    | uma BET deixaria o saldo negativo                                                |
-| `REVERSAL_INSUFFICIENT_FUNDS` | 7.9   | uma reversão (ROLLBACK de crédito) deixaria o saldo negativo                     |
-| `REFERENCE_NOT_FOUND`         | 7.1   | a referência não chegou dentro do limite de tentativas                           |
-| `REFERENCE_NOT_PROCESSED`     | 7.1   | a referência existe, mas terminou (ou ficou) num estado diferente de `PROCESSED` |
-| `REFERENCE_KIND_NOT_ALLOWED`  | 7.3   | o tipo da referência não pode ser alvo desta operação                            |
-| `REFERENCE_CONTEXT_MISMATCH`  | 7.2   | provider, jogador, wallet, moeda ou rodada diferentes dos da referência          |
-| `REFERENCE_ALREADY_REVERSED`  | 7.4   | a referência já foi revertida por um REFUND ou ROLLBACK (D6)                     |
-| `REFERENCE_AMOUNT_MISMATCH`   | 7.5   | valor do REFUND/ROLLBACK diferente do valor da referência                        |
-| `PROCESSING_FAILED`           | —     | falha permanente de infraestrutura (estado `FAILED`; veja as limitações)         |
+| `failureCode`                 | Regra | Significado                                                                                                |
+| ----------------------------- | ----- | ---------------------------------------------------------------------------------------------------------- |
+| `PLAYER_WALLET_MISMATCH`      | §7    | o jogador não é o dono da wallet                                                                           |
+| `CURRENCY_MISMATCH`           | §7    | moeda da operação diferente da moeda da wallet                                                             |
+| `INSUFFICIENT_FUNDS`          | §7    | uma BET deixaria o saldo negativo                                                                          |
+| `REVERSAL_INSUFFICIENT_FUNDS` | 7.9   | uma reversão (ROLLBACK de crédito) deixaria o saldo negativo                                               |
+| `REFERENCE_NOT_FOUND`         | 7.1   | a referência não chegou dentro do limite de tentativas                                                     |
+| `REFERENCE_NOT_PROCESSED`     | 7.1   | a referência existe, mas terminou (ou ficou) num estado diferente de `PROCESSED`                           |
+| `REFERENCE_KIND_NOT_ALLOWED`  | 7.3   | o tipo da referência não pode ser alvo desta operação                                                      |
+| `REFERENCE_CONTEXT_MISMATCH`  | 7.2   | provider, jogador, wallet, moeda ou rodada diferentes dos da referência                                    |
+| `REFERENCE_ALREADY_REVERSED`  | 7.4   | a referência já foi revertida por um REFUND ou ROLLBACK (D6)                                               |
+| `REFERENCE_AMOUNT_MISMATCH`   | 7.5   | valor do REFUND/ROLLBACK diferente do valor da referência                                                  |
+| `PROCESSING_FAILED`           | §6.3  | falha permanente de processamento: o worker desistiu de uma pendência que falhava sempre (estado `FAILED`) |
 
 Erros de contrato, de idempotência e transitórios **não** são `failureCode`: nada é gravado para eles, e eles existem só como códigos de erro da API.
 
@@ -411,7 +416,7 @@ O §7 pede que interpretações adicionais sejam documentadas. Em todas elas, a 
   - `markProcessed`, `reject` e `markPendingReference` recebem um objeto com o `observedBalance`, que é o saldo devolvido nos replays (regra 7.7). `markPendingReference` recebe também o `nextAttemptAt`.
   - `WagerTransaction` ganhou `observedBalance`, `attempts` e `nextAttemptAt`, necessários para o replay e para o retry de referências (D11).
   - `Wallet.open` devolve a wallet **e** o lançamento OPENING, para que saldo inicial e ledger nasçam juntos. A transação OPENING é criada por uma factory interna, `WagerTransaction.createOpening`.
-  - `fail(code)` mantém a assinatura do enunciado, mas nenhum fluxo a usa hoje (veja as [limitações](#12-trade-offs-e-limitações)).
+  - `fail(code)` mantém a assinatura do enunciado. Quem a usa é o worker de pendências, ao desistir de uma transação que falha sempre ([seção 6](#6-mensageria-inbox-outbox-e-referências-pendentes)).
 
 ---
 
@@ -436,7 +441,7 @@ O §7 pede que interpretações adicionais sejam documentadas. Em todas elas, a 
 - **Só moedas com 2 casas decimais.** JPY (0 casas) e KWD (3 casas) exigiriam escala por moeda. A moeda é validada só pelo formato (`^[A-Z]{3}$`), não contra a lista ISO-4217.
 - **Uma wallet por jogador e moeda.**
 - **Sem reversão parcial** (fora de escopo pela regra 7.5). Depois de um ROLLBACK de um REFUND, a BET original não pode ser revertida de novo (D6).
-- **O estado `FAILED`** está modelado (§6), com a transição e o `failureCode` `PROCESSING_FAILED`, mas nenhum fluxo o produz hoje. Falhas permanentes de infraestrutura não gravam a transação: viram 500 no HTTP e DLQ no consumidor, onde ficam auditáveis.
+- **O estado `FAILED` só é produzido pelo worker de pendências**, quando uma transação já gravada falha sempre. Na submissão, uma falha permanente não grava a transação: vira 500 no HTTP e DLQ no consumidor, onde a mensagem fica auditável.
 - **Retenção:** inbox e outbox publicada crescem sem limpeza. Em produção, faltaria um job de expurgo por idade.
 - **Desvio de relógio:** `outbox_publish_delay_seconds` usa o `occurredAt` da instância que confirmou o evento, então é um indicador de tendência, não uma medida exata.
 
