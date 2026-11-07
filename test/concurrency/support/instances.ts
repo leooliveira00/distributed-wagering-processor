@@ -4,6 +4,8 @@ import { type Env } from '../../../src/infrastructure/config/env';
 export interface Instance {
   url: string;
   process: Subprocess;
+  /** Raw stdout lines written so far; empty unless spawned with `captureStdout`. */
+  stdoutLines(): string[];
 }
 
 export interface Cluster {
@@ -46,7 +48,11 @@ async function waitUntilLive(url: string, process: Subprocess): Promise<void> {
  * Spawns one real application process (`bun src/main.ts`) without waiting for it to be live.
  * `overrides` are extra environment variables, e.g. APP_ROLES or FAULT_INJECTION.
  */
-export function spawnInstance(env: Env, overrides: Record<string, string> = {}): Instance {
+export function spawnInstance(
+  env: Env,
+  overrides: Record<string, string> = {},
+  options: { captureStdout?: boolean } = {},
+): Instance {
   const port = freePort();
   const child = Bun.spawn([process.execPath, 'src/main.ts'], {
     cwd: `${import.meta.dir}/../../..`,
@@ -68,10 +74,28 @@ export function spawnInstance(env: Env, overrides: Record<string, string> = {}):
       ...(env.AWS_ENDPOINT_URL ? { AWS_ENDPOINT_URL: env.AWS_ENDPOINT_URL } : {}),
       ...overrides,
     },
-    stdout: 'ignore',
+    stdout: options.captureStdout ? 'pipe' : 'ignore',
     stderr: 'inherit',
   });
-  return { url: `http://127.0.0.1:${String(port)}`, process: child };
+  const lines: string[] = [];
+  if (options.captureStdout && child.stdout instanceof ReadableStream) {
+    // Drained continuously: an unread pipe would eventually block the child's writes.
+    void (async () => {
+      let pending = '';
+      const decoder = new TextDecoder();
+      for await (const chunk of child.stdout as ReadableStream<Uint8Array>) {
+        pending += decoder.decode(chunk, { stream: true });
+        const parts = pending.split('\n');
+        pending = parts.pop() ?? '';
+        lines.push(...parts.filter((line) => line.trim().length > 0));
+      }
+    })();
+  }
+  return {
+    url: `http://127.0.0.1:${String(port)}`,
+    process: child,
+    stdoutLines: () => [...lines],
+  };
 }
 
 export { waitUntilLive };
