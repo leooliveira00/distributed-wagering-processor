@@ -264,17 +264,17 @@ O enunciado pede que os eventos sejam publicados, mas não define o destino. Ele
 
 Todos os endpoints usam o mesmo mapeamento (`toHttpError`) e o mesmo envelope de erro, `{ "error": { "code", "message", "retryable" } }`. O provedor decide **pelo status e pelo `code`**, sem interpretar mensagens:
 
-| Situação                                                        | Status      | `code` (exemplos)                                                                       | Reenviar?                                 |
-| --------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------- | ----------------------------------------- |
-| Processada                                                      | `201`       | —                                                                                       | — (reenvio = replay)                      |
-| Aceita, aguardando a referência                                 | `202`       | —                                                                                       | — (consultar depois)                      |
-| Contrato inválido                                               | `400`       | `INVALID_PAYLOAD`, `INVALID_IDEMPOTENCY_KEY`, `RESERVED_PROVIDER`, `REFERENCE_REQUIRED` | não: corrigir o payload                   |
-| Token ausente ou inválido (quando a autenticação estiver ativa) | `401`/`403` | `UNAUTHORIZED`, `FORBIDDEN`                                                             | não                                       |
-| Wallet ou transação inexistente                                 | `404`       | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`                                             | não                                       |
-| Conflito de idempotência / estado                               | `409`       | `IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_TRANSACTION_CONFLICT`, `WALLET_ALREADY_EXISTS`    | não                                       |
-| Rejeitada por regra de negócio                                  | `422`       | o `failureCode` (tabela abaixo)                                                         | não: a transação fica gravada e auditável |
-| Falha transitória de infraestrutura                             | `503`       | `SERVICE_UNAVAILABLE` (com `Retry-After`)                                               | **sim**, com a mesma key                  |
-| Erro inesperado ou violação de integridade                      | `500`       | `INTERNAL_ERROR`, `INTEGRITY_VIOLATION`                                                 | não (é um bug)                            |
+| Situação                                                        | Status      | `code` (exemplos)                                                                                         | Reenviar?                                 |
+| --------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Processada                                                      | `201`       | —                                                                                                         | — (reenvio = replay)                      |
+| Aceita, aguardando a referência                                 | `202`       | —                                                                                                         | — (consultar depois)                      |
+| Contrato inválido                                               | `400`       | `INVALID_PAYLOAD`, `INVALID_IDEMPOTENCY_KEY`, `RESERVED_PROVIDER`, `REFERENCE_REQUIRED`, `SELF_REFERENCE` | não: corrigir o payload                   |
+| Token ausente ou inválido (quando a autenticação estiver ativa) | `401`/`403` | `UNAUTHORIZED`, `FORBIDDEN`                                                                               | não                                       |
+| Wallet ou transação inexistente                                 | `404`       | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`                                                               | não                                       |
+| Conflito de idempotência / estado                               | `409`       | `IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_TRANSACTION_CONFLICT`, `WALLET_ALREADY_EXISTS`                      | não                                       |
+| Rejeitada por regra de negócio                                  | `422`       | o `failureCode` (tabela abaixo)                                                                           | não: a transação fica gravada e auditável |
+| Falha transitória de infraestrutura                             | `503`       | `SERVICE_UNAVAILABLE` (com `Retry-After`)                                                                 | **sim**, com a mesma key                  |
+| Erro inesperado ou violação de integridade                      | `500`       | `INTERNAL_ERROR`, `INTEGRITY_VIOLATION`                                                                   | não (é um bug)                            |
 
 A resposta `422` traz o envelope de erro **e** os dados da transação rejeitada. Um replay devolve o mesmo status da primeira resposta.
 
@@ -404,6 +404,12 @@ O §7 pede que interpretações adicionais sejam documentadas. Em todas elas, a 
 - **`LOSS`** é aplicada (`PROCESSED`, com `WagerTransactionProcessed`), mas não gera lançamento nem `WalletBalanceChanged`, porque o saldo não muda.
 - **Reconciliação detecta, não corrige.** Corrigir automaticamente esconderia a causa da divergência. Uma divergência gera log de alerta e métrica.
 - **Saldo observado nos replays** (regra 7.7): o saldo de _quando a operação foi aplicada_, não o atual. Ele fica na coluna `observed_balance`.
+- **Autorreferência.** Uma transação cujo `referenceExternalTransactionId` é o próprio `externalTransactionId` é recusada na entrada (`400 SELF_REFERENCE`), e nada é gravado. No banco, `CHECK (reference_transaction_id <> id)` reforça a regra.
+- **Assinaturas adaptadas** (o §6 permite, desde que as garantias sejam preservadas):
+  - `markProcessed`, `reject` e `markPendingReference` recebem um objeto com o `observedBalance`, que é o saldo devolvido nos replays (regra 7.7). `markPendingReference` recebe também o `nextAttemptAt`.
+  - `WagerTransaction` ganhou `observedBalance`, `attempts` e `nextAttemptAt`, necessários para o replay e para o retry de referências (D11).
+  - `Wallet.open` devolve a wallet **e** o lançamento OPENING, para que saldo inicial e ledger nasçam juntos. A transação OPENING é criada por uma factory interna, `WagerTransaction.createOpening`.
+  - `fail(code)` mantém a assinatura do enunciado, mas nenhum fluxo a usa hoje (veja as [limitações](#12-trade-offs-e-limitações)).
 
 ---
 
