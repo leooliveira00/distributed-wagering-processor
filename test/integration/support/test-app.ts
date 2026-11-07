@@ -1,4 +1,5 @@
 import { type INestApplication } from '@nestjs/common';
+import { type NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { type AddressInfo } from 'node:net';
 import { AppModule } from '../../../src/app.module';
@@ -40,7 +41,7 @@ export async function createTestApp(
   }
   const moduleRef = await builder.compile();
 
-  const app = moduleRef.createNestApplication({ bufferLogs: true });
+  const app = moduleRef.createNestApplication<NestExpressApplication>({ bufferLogs: true });
   configureApp(app);
   await app.listen(0, '127.0.0.1');
   const { port } = (app.getHttpServer() as { address(): AddressInfo }).address();
