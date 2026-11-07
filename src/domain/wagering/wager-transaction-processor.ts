@@ -131,6 +131,11 @@ export class WagerTransactionProcessor {
         }
         ledgerEntry = wallet.debit(transaction.money, movement);
       } else {
+        // The mirror of insufficient funds: a balance the database cannot store is refused here,
+        // as a rule, instead of surfacing as a numeric overflow at write time.
+        if (!wallet.canCredit(transaction.money)) {
+          return this.reject(input, FailureCode.BalanceLimitExceeded);
+        }
         ledgerEntry = wallet.credit(transaction.money, movement);
       }
     }

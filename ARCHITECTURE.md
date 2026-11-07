@@ -102,7 +102,7 @@ O `WagerTransactionProcessor` aplica as regras do §7 do enunciado nesta ordem:
 2. resolução da referência, que verifica existência, estado, tipo, contexto (provider, player, wallet, moeda e rodada), valor igual e reversão única;
 3. efeito no saldo.
 
-Ele é **lógica pura de domínio**: altera os agregados e devolve o resultado, e quem persiste é o caso de uso. Uma aposta sem saldo é rejeitada com `INSUFFICIENT_FUNDS`; uma **reversão** que deixaria o saldo negativo é rejeitada com um código distinto, `REVERSAL_INSUFFICIENT_FUNDS` (regra 7.9).
+Ele é **lógica pura de domínio**: altera os agregados e devolve o resultado, e quem persiste é o caso de uso. Uma aposta sem saldo é rejeitada com `INSUFFICIENT_FUNDS`; uma **reversão** que deixaria o saldo negativo é rejeitada com um código distinto, `REVERSAL_INSUFFICIENT_FUNDS` (regra 7.9). No sentido oposto, um crédito que levaria o saldo além do maior valor que cabe em `numeric(20,2)` (`999999999999999999.99`) é rejeitado com `BALANCE_LIMIT_EXCEEDED`. Assim, ele vira uma regra de negócio auditável, e não um overflow descoberto pelo banco na gravação.
 
 ### Wallet e ledger
 
@@ -295,6 +295,7 @@ São os motivos estáveis gravados nas transações `REJECTED` (e `FAILED`):
 | `CURRENCY_MISMATCH`           | §7    | moeda da operação diferente da moeda da wallet                                                             |
 | `INSUFFICIENT_FUNDS`          | §7    | uma BET deixaria o saldo negativo                                                                          |
 | `REVERSAL_INSUFFICIENT_FUNDS` | 7.9   | uma reversão (ROLLBACK de crédito) deixaria o saldo negativo                                               |
+| `BALANCE_LIMIT_EXCEEDED`      | —     | um crédito levaria o saldo além do maior valor armazenável (`numeric(20,2)`)                               |
 | `REFERENCE_NOT_FOUND`         | 7.1   | a referência não chegou dentro do limite de tentativas                                                     |
 | `REFERENCE_NOT_PROCESSED`     | 7.1   | a referência existe, mas terminou (ou ficou) num estado diferente de `PROCESSED`                           |
 | `REFERENCE_KIND_NOT_ALLOWED`  | 7.3   | o tipo da referência não pode ser alvo desta operação                                                      |
