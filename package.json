@@ -22,7 +22,10 @@
     "migrate:up": "bun scripts/migrate.ts up",
     "migrate:down": "bun scripts/migrate.ts down",
     "migrate:status": "bun scripts/migrate.ts status",
-    "sqs:bootstrap": "bun scripts/sqs-bootstrap.ts"
+    "sqs:bootstrap": "bun scripts/sqs-bootstrap.ts",
+    "demo:race": "bun scripts/demo/race.ts",
+    "demo:sqs": "bun scripts/demo/sqs.ts",
+    "demo:events": "bun scripts/demo/events.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "3.1163.0",
