@@ -11,6 +11,7 @@ import {
   type TransientReason,
   UniqueViolationError,
 } from '../../application/errors';
+import { QUERY_READ_TIMEOUT_MESSAGE } from './silent-connection-guard';
 
 /**
  * Translates persistence failures into application errors. Two shapes reach us:
@@ -37,7 +38,7 @@ const TRANSIENT_NODE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT',
  * connection lost mid-query. Pinned by unit tests, since a driver upgrade could reword them.
  */
 const CODELESS_CONNECTION_FAILURES = [
-  'Query read timeout',
+  QUERY_READ_TIMEOUT_MESSAGE,
   'timeout exceeded when trying to connect',
   'Connection terminated due to connection timeout',
   'Connection terminated unexpectedly',
