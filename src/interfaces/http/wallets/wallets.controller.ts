@@ -24,6 +24,7 @@ import {
   ListWalletLedger,
 } from '../../../application/wallets/wallet-queries';
 import { type LedgerPageView, type WalletView } from '../../../application/wallets/wallet-views';
+import { uuidSchema } from '../../contracts/wager-contract';
 import { requestContextFrom } from '../request-context';
 import { parseInput } from '../validation';
 
@@ -31,11 +32,11 @@ import { parseInput } from '../validation';
 const moneySchema = z.strictObject({ amount: z.string(), currency: z.string() });
 
 const createWalletSchema = z.strictObject({
-  playerId: z.uuid(),
+  playerId: uuidSchema,
   initialBalance: moneySchema,
 });
 
-const walletIdSchema = z.uuid();
+const walletIdSchema = uuidSchema;
 
 const ledgerQuerySchema = z.object({
   cursor: z.string().min(1).optional(),

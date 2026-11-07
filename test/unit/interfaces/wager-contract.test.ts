@@ -27,6 +27,17 @@ describe('wagerMessageSchema', () => {
     expect(wagerMessageSchema.safeParse(message()).success).toBe(true);
   });
 
+  it('puts UUIDs in canonical lowercase form, so the hash never depends on letter case', () => {
+    const upper = message();
+    upper.data.playerId = upper.data.playerId.toUpperCase();
+    upper.data.walletId = upper.data.walletId.toUpperCase();
+
+    const parsed = wagerMessageSchema.parse(upper);
+
+    expect(parsed.data.playerId).toBe('0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1');
+    expect(parsed.data.walletId).toBe('0192f291-27dd-7d3f-8071-5f8685deef37');
+  });
+
   it.each([
     ['another message type', { ...message(), type: 'SomethingElse' }],
     ['a non ISO occurredAt', { ...message(), occurredAt: 'yesterday' }],
