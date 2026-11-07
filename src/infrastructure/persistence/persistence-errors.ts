@@ -32,6 +32,27 @@ const TRANSIENT_SQLSTATES = new Map<string, TransientReason>([
 ]);
 const INTEGRITY_SQLSTATES = new Set(['23514', '23001', '23503', '23502']);
 const TRANSIENT_NODE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE']);
+/**
+ * Failures `pg` and `pg-pool` raise without any code, only a fixed message: client timeouts and a
+ * connection lost mid-query. Pinned by unit tests, since a driver upgrade could reword them.
+ */
+const CODELESS_CONNECTION_FAILURES = [
+  'Query read timeout',
+  'timeout exceeded when trying to connect',
+  'Connection terminated due to connection timeout',
+  'Connection terminated unexpectedly',
+  'Client has encountered a connection error and is not queryable',
+];
+
+/** True when the error, or any error in its `cause` chain, is a codeless connection failure. */
+function isCodelessConnectionFailure(error: unknown): boolean {
+  for (let current = error, depth = 0; current instanceof Error && depth < 5; depth++) {
+    const { message } = current;
+    if (CODELESS_CONNECTION_FAILURES.some((known) => message.includes(known))) return true;
+    current = current.cause;
+  }
+  return false;
+}
 
 interface DriverErrorShape {
   code?: unknown;
@@ -81,7 +102,10 @@ export function translatePersistenceError(error: unknown): unknown {
       reason: sqlReason,
     });
   }
-  if (sqlState !== undefined && TRANSIENT_NODE_CODES.has(sqlState)) {
+  if (
+    (sqlState !== undefined && TRANSIENT_NODE_CODES.has(sqlState)) ||
+    isCodelessConnectionFailure(error)
+  ) {
     return new TransientError('Database unreachable, retry later', {
       cause: error,
       reason: 'connection',

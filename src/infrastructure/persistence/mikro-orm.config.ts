@@ -24,11 +24,15 @@ export function buildMikroOrmConfig(env: Env): Options {
     user: env.DATABASE_USER,
     password: env.DATABASE_PASSWORD,
     pool: { min: 0, max: env.DATABASE_POOL_MAX },
-    // Sent by `pg` as startup parameters of every pooled connection: a hot wallet can never make
-    // a request wait indefinitely for the row lock.
+    // lock_timeout and statement_timeout are sent by `pg` as startup parameters of every pooled
+    // connection: a hot wallet can never make a request wait indefinitely for the row lock.
+    // The two client-side bounds keep a silent network from hanging a request or a worker: one
+    // for opening (or waiting for) a connection, one for an answer that never comes.
     driverOptions: {
       lock_timeout: env.DATABASE_LOCK_TIMEOUT_MS,
       statement_timeout: env.DATABASE_STATEMENT_TIMEOUT_MS,
+      connectionTimeoutMillis: env.DATABASE_CONNECT_TIMEOUT_MS,
+      query_timeout: env.DATABASE_QUERY_TIMEOUT_MS,
     },
     entities: entitySchemas,
     discovery: { warnWhenNoEntities: false },

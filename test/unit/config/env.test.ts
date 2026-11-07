@@ -40,6 +40,22 @@ describe('loadEnv', () => {
     expect(() => loadEnv(source)).toThrow(InvalidEnvironmentError);
   });
 
+  it('bounds database connections and silent queries on the client side by default', () => {
+    const env = loadEnv({});
+
+    expect(env.DATABASE_CONNECT_TIMEOUT_MS).toBe(5_000);
+    expect(env.DATABASE_QUERY_TIMEOUT_MS).toBeGreaterThan(env.DATABASE_STATEMENT_TIMEOUT_MS);
+  });
+
+  it.each([
+    ['equal to', '15000'],
+    ['below', '10000'],
+  ])('rejects a client query timeout %s the statement timeout', (_, queryTimeout) => {
+    expect(() =>
+      loadEnv({ DATABASE_STATEMENT_TIMEOUT_MS: '15000', DATABASE_QUERY_TIMEOUT_MS: queryTimeout }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
   it('parses fault injection points for test environments', () => {
     const env = loadEnv({
       NODE_ENV: 'test',
