@@ -3,6 +3,7 @@ import { Migration20261106000100_initial_schema } from './Migration2026110600010
 import { Migration20261106000200_ledger_integrity } from './Migration20261106000200_ledger_integrity';
 import { Migration20261106000300_pending_dependents_index } from './Migration20261106000300_pending_dependents_index';
 import { Migration20261107000400_pending_processing_failures } from './Migration20261107000400_pending_processing_failures';
+import { Migration20261107000500_transaction_integrity } from './Migration20261107000500_transaction_integrity';
 
 /**
  * Migrations are registered explicitly (instead of glob discovery) so the same list runs
@@ -21,5 +22,9 @@ export const migrations: MigrationObject[] = [
   {
     name: 'Migration20261107000400_pending_processing_failures',
     class: Migration20261107000400_pending_processing_failures,
+  },
+  {
+    name: 'Migration20261107000500_transaction_integrity',
+    class: Migration20261107000500_transaction_integrity,
   },
 ];
