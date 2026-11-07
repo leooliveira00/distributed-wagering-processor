@@ -440,6 +440,7 @@ O §7 pede que interpretações adicionais sejam documentadas. Em todas elas, a 
 
 - **Sem autenticação** ([seção 9](#9-autenticação)). Hoje qualquer cliente pode enviar operações em nome de qualquer `providerId`. Isso é aceitável só no escopo do desafio; o desenho e o ponto de extensão estão prontos.
 - **`/metrics` é público.** Em produção, deve ficar restrito à rede interna.
+- **A aplicação conecta ao banco com o mesmo usuário que cria o schema**, um superuser no compose. As garantias do banco valem contra **bugs** do código, mas não contra uma credencial vazada: um superuser pode desligar as triggers (`session_replication_role`) e apagar o ledger. Em produção, seriam duas roles: uma dona do schema, usada só pelas migrations; e uma da aplicação, sem ser superuser nem dona das tabelas, com apenas `SELECT`, `INSERT` e `UPDATE` (as triggers já recusam `DELETE` e `TRUNCATE` onde importa). Ficou fora daqui porque o setup local e os testes, que criam bancos descartáveis, usam um único usuário.
 - **Sem rate limiting** por provedor.
 - **Dependências auditadas no CI** (`bun audit`). As dependências de produção não podem ter nenhuma vulnerabilidade conhecida, e hoje não têm. As de desenvolvimento só fazem o CI falhar em severidade alta ou crítica. Existe uma vulnerabilidade **moderada** conhecida no `minimatch`, usado pelo ESLint e pelo typescript-eslint: é ferramental de desenvolvimento, não entra na imagem e fica registrada aqui até sair uma versão corrigida dentro das faixas usadas.
 - **Só moedas com 2 casas decimais.** JPY (0 casas) e KWD (3 casas) exigiriam escala por moeda. A moeda é validada só pelo formato (`^[A-Z]{3}$`), não contra a lista ISO-4217.
@@ -457,6 +458,7 @@ Esta seção é um desenho, não algo implementado. Os itens marcados com **(mud
 
 - **Banco:** RDS PostgreSQL Multi-AZ.
   - As migrations rodam num job de deploy, como o serviço `migrate` do compose, e nunca no boot das instâncias.
+  - **(mudança)** Duas roles: a do job de migrations, dona do schema; e a da aplicação, sem superuser e sem ownership, só com `SELECT`, `INSERT` e `UPDATE`. Assim, uma credencial da aplicação vazada não consegue desligar as triggers (veja as limitações).
   - O total de conexões (`DATABASE_POOL_MAX` × número de instâncias) precisa ficar abaixo do `max_connections` da instância RDS.
 - **Computação:** ECS Fargate com a mesma imagem e um serviço por papel (`APP_ROLES`).
   - `api`: atrás de um ALB, escalando por CPU ou requisições por instância.
