@@ -430,6 +430,7 @@ O §7 pede que interpretações adicionais sejam documentadas. Em todas elas, a 
 - **Sem autenticação** ([seção 9](#9-autenticação)). Hoje qualquer cliente pode enviar operações em nome de qualquer `providerId`. Isso é aceitável só no escopo do desafio; o desenho e o ponto de extensão estão prontos.
 - **`/metrics` é público.** Em produção, deve ficar restrito à rede interna.
 - **Sem rate limiting** por provedor.
+- **Dependências auditadas no CI** (`bun audit`). As dependências de produção não podem ter nenhuma vulnerabilidade conhecida, e hoje não têm. As de desenvolvimento só fazem o CI falhar em severidade alta ou crítica. Existe uma vulnerabilidade **moderada** conhecida no `minimatch`, usado pelo ESLint e pelo typescript-eslint: é ferramental de desenvolvimento, não entra na imagem e fica registrada aqui até sair uma versão corrigida dentro das faixas usadas.
 - **Só moedas com 2 casas decimais.** JPY (0 casas) e KWD (3 casas) exigiriam escala por moeda. A moeda é validada só pelo formato (`^[A-Z]{3}$`), não contra a lista ISO-4217.
 - **Uma wallet por jogador e moeda.**
 - **Sem reversão parcial** (fora de escopo pela regra 7.5). Depois de um ROLLBACK de um REFUND, a BET original não pode ser revertida de novo (D6).
