@@ -81,13 +81,15 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
+    # Compose has a single health status, meaning "ready for traffic": readiness (PostgreSQL and
+    # SQS reachable). /health/live stays for orchestrators with a separate liveness probe.
     healthcheck:
       test:
         [
           'CMD',
           'bun',
           '-e',
-          "fetch('http://localhost:3000/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+          "fetch('http://localhost:3000/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
         ]
       interval: 5s
       timeout: 3s
