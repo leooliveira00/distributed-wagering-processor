@@ -4,7 +4,6 @@ import {
   PublishOutbox,
 } from '../../../src/application/outbox/publish-outbox';
 import { type FaultInjector, type FaultPoint } from '../../../src/application/ports/fault-injector';
-import { type AppLogger } from '../../../src/application/ports/logger';
 import { type MessagePublisher } from '../../../src/application/ports/message-publisher';
 import { SubmitWagerTransaction } from '../../../src/application/wagering/submit-wager-transaction';
 import { WagerTransactionKind } from '../../../src/domain/wagering/wager-transaction-kind';
@@ -16,12 +15,8 @@ import { MikroOrmUnitOfWork } from '../../../src/infrastructure/persistence/mikr
 import { SystemClock, UuidV7IdGenerator } from '../../../src/infrastructure/system/system.adapters';
 import { createTestDatabase, type TestDatabase } from '../support/test-database';
 import { createTestQueue, type TestQueue } from '../support/test-queue';
+import { silentLogger } from '../support/test-loggers';
 
-const silentLogger: AppLogger = {
-  info: () => undefined,
-  warn: () => undefined,
-  error: () => undefined,
-};
 const noFaults: FaultInjector = { trigger: () => undefined };
 const LEASE_MS = 500;
 const OPTIONS: PublishOutboxOptions = {
@@ -73,10 +68,16 @@ async function setup(name: string): Promise<Fixture> {
   const metrics = new PrometheusMetrics();
   const publisher = new SqsMessagePublisher(queue.sqs, queue.name);
   const createWallet = new CreateWallet(unitOfWork, ids, clock);
-  const submit = new SubmitWagerTransaction(unitOfWork, ids, clock, {
-    backoff: { baseMs: 1_000, capMs: 60_000 },
-    maxAttempts: 10,
-  });
+  const submit = new SubmitWagerTransaction(
+    unitOfWork,
+    ids,
+    clock,
+    {
+      backoff: { baseMs: 1_000, capMs: 60_000 },
+      maxAttempts: 10,
+    },
+    new PrometheusMetrics(),
+  );
   const context = { correlationId: 'corr-outbox' };
 
   const fixture: Fixture = {
@@ -154,6 +155,8 @@ describe('PublishOutbox', () => {
     }
     expect((await f.outboxState()).every((row) => row.published && !row.leased)).toBe(true);
     expect((await f.newPublisher().runOnce()).claimed).toBe(0);
+    // Outbox lag: one commit-to-publish delay observed per published event (README §12).
+    expect(await f.metrics.observationCount('outbox_publish_delay_seconds')).toBe(8);
   }, 30_000);
 
   it('splits the work between concurrent publishers without publishing anything twice', async () => {

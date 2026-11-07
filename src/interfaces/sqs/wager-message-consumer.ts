@@ -137,8 +137,11 @@ export class WagerMessageConsumer {
     const handle = message.ReceiptHandle ?? '';
     this.inFlight.set(handle, message);
     try {
-      const { disposition, fields } = await this.decide(message);
-      await this.apply(message, disposition, fields);
+      // One log scope per message: every line written while handling it carries its ids.
+      await this.logger.withContext({}, async () => {
+        const { disposition, fields } = await this.decide(message);
+        await this.apply(message, disposition, fields);
+      });
     } catch (error) {
       // Acting on the broker failed (e.g. delete): the message reappears and the inbox dedups it.
       this.logger.error('Failed to settle message', {
@@ -184,6 +187,12 @@ export class WagerMessageConsumer {
       providerId: data.providerId,
       walletId: data.walletId,
     };
+    this.logger.addContext({
+      messageId,
+      correlationId,
+      providerId: data.providerId,
+      walletId: data.walletId,
+    });
 
     let result: WagerSubmissionResult;
     try {
@@ -197,6 +206,7 @@ export class WagerMessageConsumer {
     }
     // Committed, not acked yet: the window README §13.5 asks to survive.
     this.faults.trigger('consumer:after-commit');
+    this.logger.addContext({ transactionId: result.transactionId });
     return {
       disposition: dispositionOfResult(result),
       fields: { ...fields, transactionId: result.transactionId, status: result.status },

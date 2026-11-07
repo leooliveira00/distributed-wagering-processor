@@ -71,6 +71,12 @@ export class PublishOutbox {
       // Outside the try: a crash here is the process dying, not a failed publication.
       this.faults.trigger('outbox:after-publish');
       published.push(message.id);
+      // Commit-to-broker delay. occurredAt comes from the instance that committed the event, so
+      // clock skew between instances shifts it slightly: a trend indicator, not an exact figure.
+      this.metrics.observe(
+        'outbox_publish_delay_seconds',
+        Math.max(0, this.clock.now().getTime() - message.occurredAt.getTime()) / 1000,
+      );
     }
 
     await this.unitOfWork.run((scope) => scope.outbox.markPublished(published, this.clock.now()));

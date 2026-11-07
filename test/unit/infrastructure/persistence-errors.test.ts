@@ -34,13 +34,21 @@ describe('translatePersistenceError', () => {
   });
 
   it.each([
-    ['an optimistic lock failure', OptimisticLockError.lockFailed('WalletRecord')],
-    ['a deadlock', new DeadlockException(pgError('40P01'))],
-    ['a raw lock timeout', pgError('55P03')],
-    ['a raw serialization failure', pgError('40001')],
-    ['a refused connection', pgError('ECONNREFUSED')],
-  ])('classifies %s as transient', (_, error) => {
-    expect(translatePersistenceError(error)).toBeInstanceOf(TransientError);
+    [
+      'an optimistic lock failure',
+      OptimisticLockError.lockFailed('WalletRecord'),
+      'optimistic_version',
+    ],
+    ['a deadlock', new DeadlockException(pgError('40P01')), 'deadlock'],
+    ['a raw deadlock at commit', pgError('40P01'), 'deadlock'],
+    ['a raw lock timeout', pgError('55P03'), 'lock_timeout'],
+    ['a raw serialization failure', pgError('40001'), 'serialization'],
+    ['a statement timeout', pgError('57014'), 'statement_timeout'],
+    ['a refused connection', pgError('ECONNREFUSED'), 'connection'],
+  ])('classifies %s as transient, with its reason', (_, error, reason) => {
+    const translated = translatePersistenceError(error);
+    expect(translated).toBeInstanceOf(TransientError);
+    expect<string>((translated as TransientError).reason).toBe(reason);
   });
 
   it.each([

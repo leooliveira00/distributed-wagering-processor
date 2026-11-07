@@ -10,6 +10,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { z } from 'zod';
+import { APP_LOGGER, type AppLogger } from '../../../application/ports/logger';
 import { ID_GENERATOR, type IdGenerator } from '../../../application/ports/system';
 import { CreateWallet } from '../../../application/wallets/create-wallet';
 import {
@@ -49,16 +50,19 @@ export class WalletsController {
     private readonly listLedger: ListWalletLedger,
     private readonly reconcileWallet: ReconcileWallet,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
+    @Inject(APP_LOGGER) private readonly logger: AppLogger,
   ) {}
 
   @Post()
   @HttpCode(201)
-  create(
+  async create(
     @Body() body: unknown,
     @Headers() headers: Record<string, string | undefined>,
   ): Promise<WalletView> {
     const command = parseInput(createWalletSchema, body);
-    return this.createWallet.execute(command, requestContextFrom(headers, this.ids));
+    const wallet = await this.createWallet.execute(command, requestContextFrom(headers, this.ids));
+    this.logger.addContext({ walletId: wallet.id });
+    return wallet;
   }
 
   @Get(':walletId')

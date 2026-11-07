@@ -47,9 +47,9 @@ export class ReconcileWallet {
     if (!consistent) {
       this.metrics.increment('wallet_reconciliation_divergences_total');
       // Only the divergence itself is logged; full balances stay in the authorized response.
+      // Which wallet, never how much (README §12): the amounts are in the response and metrics.
       this.logger.warn('Wallet balance diverges from its ledger', {
         walletId,
-        difference: difference.toJSON().amount,
         currency: wallet.currency,
         checkedEntries: summary.entries,
         walletVersion: wallet.version,

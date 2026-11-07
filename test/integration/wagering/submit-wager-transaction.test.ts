@@ -19,6 +19,7 @@ import { WagerTransactionKind as Kind } from '../../../src/domain/wagering/wager
 import { WagerTransactionStatus as Status } from '../../../src/domain/wagering/wager-transaction-status';
 import { InvalidWagerTransactionError } from '../../../src/domain/wagering/wagering.errors';
 import { buildMikroOrmConfig } from '../../../src/infrastructure/persistence/mikro-orm.config';
+import { PrometheusMetrics } from '../../../src/infrastructure/observability/prometheus-metrics';
 import { MikroOrmUnitOfWork } from '../../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { SystemClock, UuidV7IdGenerator } from '../../../src/infrastructure/system/system.adapters';
 import { uuid } from '../support/domain-fixtures';
@@ -35,6 +36,7 @@ let db: TestDatabase;
 let unitOfWork: UnitOfWork;
 let submit: SubmitWagerTransaction;
 let createWallet: CreateWallet;
+const metrics = new PrometheusMetrics();
 
 beforeAll(async () => {
   db = await createTestDatabase('submit_wager');
@@ -44,6 +46,7 @@ beforeAll(async () => {
     new UuidV7IdGenerator(),
     new SystemClock(),
     POLICY,
+    metrics,
   );
   createWallet = new CreateWallet(unitOfWork, new UuidV7IdGenerator(), new SystemClock());
 });
@@ -327,6 +330,7 @@ describe('contract and infrastructure failures', () => {
       new UuidV7IdGenerator(),
       new SystemClock(),
       POLICY,
+      new PrometheusMetrics(),
     );
 
     let error: unknown;

@@ -51,11 +51,31 @@ export class ConflictError extends ApplicationError {
   readonly kind = 'conflict';
 }
 
+/** Why a temporary failure happened; the lock-related ones are concurrency conflicts. */
+export type TransientReason =
+  | 'lock_timeout'
+  | 'deadlock'
+  | 'serialization'
+  | 'optimistic_version'
+  | 'statement_timeout'
+  | 'connection'
+  | 'other';
+
+/** Reasons that mean "another transaction held or changed the same rows" (README §12). */
+export const LOCK_CONFLICT_REASONS: ReadonlySet<TransientReason> = new Set([
+  'lock_timeout',
+  'deadlock',
+  'serialization',
+  'optimistic_version',
+]);
+
 export class TransientError extends ApplicationError {
   readonly kind = 'transient';
+  readonly reason: TransientReason;
 
-  constructor(message: string, options?: { cause?: unknown }) {
+  constructor(message: string, options?: { cause?: unknown; reason?: TransientReason }) {
     super('SERVICE_UNAVAILABLE', message);
+    this.reason = options?.reason ?? 'other';
     if (options?.cause !== undefined) this.cause = options.cause;
   }
 }

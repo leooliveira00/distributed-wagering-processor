@@ -16,6 +16,7 @@ import { WagerMessageConsumer } from '../../../src/interfaces/sqs/wager-message-
 import { expectLedgerConsistent } from '../support/invariants';
 import { createTestDatabase, type TestDatabase } from '../support/test-database';
 import { createQueuePair, type QueuePair, type TestQueue } from '../support/test-queue';
+import { RecordingLogger } from '../support/test-loggers';
 
 const CONSUMER_NAME = 'wager-transactions-consumer';
 const MAX_RECEIVE_COUNT = 3;
@@ -60,6 +61,7 @@ interface Harness {
   queues: QueuePair;
   unitOfWork: ControlledUnitOfWork;
   metrics: PrometheusMetrics;
+  logger: RecordingLogger;
   consumer: WagerMessageConsumer;
 }
 
@@ -71,6 +73,7 @@ async function harness(name: string, visibilityTimeoutSeconds = 2): Promise<Harn
   pairs.push(queues);
   const unitOfWork = new ControlledUnitOfWork(realUnitOfWork);
   const metrics = new PrometheusMetrics();
+  const logger = new RecordingLogger();
   const submit = new SubmitWagerTransaction(
     unitOfWork,
     new UuidV7IdGenerator(),
@@ -79,12 +82,13 @@ async function harness(name: string, visibilityTimeoutSeconds = 2): Promise<Harn
       backoff: { baseMs: 1_000, capMs: 60_000 },
       maxAttempts: 10,
     },
+    metrics,
   );
   const consumer = new WagerMessageConsumer(
     queues.main.sqs,
     submit,
     metrics,
-    { info: () => undefined, warn: () => undefined, error: () => undefined },
+    logger,
     { trigger: () => undefined },
     {
       consumerName: CONSUMER_NAME,
@@ -97,7 +101,7 @@ async function harness(name: string, visibilityTimeoutSeconds = 2): Promise<Harn
       idleOnErrorMs: 100,
     },
   );
-  return { queues, unitOfWork, metrics, consumer };
+  return { queues, unitOfWork, metrics, logger, consumer };
 }
 
 const openWallet = (amount = '100.00'): Promise<WalletView> =>
@@ -184,6 +188,19 @@ describe('WagerMessageConsumer — acknowledged outcomes', () => {
     expect(
       await metrics.counterValue('sqs_messages_processed_total', { outcome: 'processed' }),
     ).toBe(1);
+    expect(
+      await metrics.counterValue('wager_transactions_total', {
+        kind: 'BET',
+        status: 'PROCESSED',
+        source: 'submission',
+      }),
+    ).toBe(1);
+    expect(
+      await metrics.observationCount('wager_processing_duration_seconds', {
+        entrypoint: 'sqs',
+        outcome: 'processed',
+      }),
+    ).toBe(1);
     await expectLedgerConsistent(db.sql, wallet.id);
   }, 30_000);
 
@@ -201,6 +218,9 @@ describe('WagerMessageConsumer — acknowledged outcomes', () => {
     expect(await transactionsOf(wallet.id)).toHaveLength(1);
     expect(await inboxRows(message.messageId)).toBe(1);
     expect(await metrics.counterValue('sqs_duplicate_messages_total')).toBe(1);
+    expect(
+      await metrics.counterValue('wager_idempotent_replays_total', { entrypoint: 'sqs' }),
+    ).toBe(1);
     expect(await depth(queues.main)).toBe(0);
     await expectLedgerConsistent(db.sql, wallet.id);
   }, 30_000);
@@ -220,7 +240,7 @@ describe('WagerMessageConsumer — acknowledged outcomes', () => {
   }, 30_000);
 
   it('acknowledges an idempotency conflict and keeps the original intact', async () => {
-    const { queues, consumer, metrics } = await harness('conflict');
+    const { queues, consumer, metrics, logger } = await harness('conflict');
     const wallet = await openWallet('100.00');
     const original = wagerMessage(wallet);
     const conflicting = {
@@ -240,6 +260,14 @@ describe('WagerMessageConsumer — acknowledged outcomes', () => {
     expect(await depth(queues.main)).toBe(0);
     expect(await depth(queues.deadLetter)).toBe(0);
     await expectLedgerConsistent(db.sql, wallet.id);
+    // The warning carries the scope of the message it is about (README §12).
+    const warning = logger.warnings.find((line) => line.message.startsWith('Message conflicts'));
+    expect(warning?.context).toEqual({
+      messageId: conflicting.messageId,
+      correlationId: conflicting.messageId,
+      providerId: 'provider-a',
+      walletId: wallet.id,
+    });
   }, 30_000);
 });
 

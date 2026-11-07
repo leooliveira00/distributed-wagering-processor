@@ -4,7 +4,9 @@ import { METRICS } from '../application/ports/metrics';
 import { PROVIDER_IDENTITY } from '../application/ports/provider-identity';
 import { CLOCK, ID_GENERATOR } from '../application/ports/system';
 import { AnonymousProviderIdentity } from './auth/anonymous-provider-identity';
+import { ReadinessProbe } from './health/readiness-probe';
 import { NestAppLogger } from './observability/nest-app-logger';
+import { OperationalGauges } from './observability/operational-gauges';
 import { PrometheusMetrics } from './observability/prometheus-metrics';
 import { MessagingModule } from './messaging/messaging.module';
 import { PersistenceModule } from './persistence/persistence.module';
@@ -17,7 +19,11 @@ import { SystemClock, UuidV7IdGenerator } from './system/system.adapters';
   providers: [
     { provide: ID_GENERATOR, useClass: UuidV7IdGenerator },
     { provide: CLOCK, useClass: SystemClock },
-    { provide: METRICS, useClass: PrometheusMetrics },
+    // One registry per process: the port and the /metrics endpoint share the same instance.
+    PrometheusMetrics,
+    { provide: METRICS, useExisting: PrometheusMetrics },
+    OperationalGauges,
+    ReadinessProbe,
     { provide: PROVIDER_IDENTITY, useClass: AnonymousProviderIdentity },
     { provide: APP_LOGGER, useClass: NestAppLogger },
   ],
@@ -27,6 +33,8 @@ import { SystemClock, UuidV7IdGenerator } from './system/system.adapters';
     ID_GENERATOR,
     CLOCK,
     METRICS,
+    PrometheusMetrics,
+    ReadinessProbe,
     PROVIDER_IDENTITY,
     APP_LOGGER,
   ],

@@ -1,5 +1,7 @@
 import { IsolationLevel } from '@mikro-orm/core';
 import { type MikroORM, type SqlEntityManager } from '@mikro-orm/postgresql';
+import { LOCK_CONFLICT_REASONS, TransientError } from '../../application/errors';
+import { type Metrics } from '../../application/ports/metrics';
 import {
   type TransactionScope,
   type UnitOfWork,
@@ -20,8 +22,14 @@ import { translatePersistenceError } from './persistence-errors';
  * flushes every registered change on success and rolls everything back if `work` throws.
  * Persistence failures leave as application errors, so use cases never see ORM types.
  */
+const NO_METRICS: Metrics = { increment: () => undefined, observe: () => undefined };
+
 export class MikroOrmUnitOfWork implements UnitOfWork {
-  constructor(private readonly orm: MikroORM) {}
+  /** `metrics` is optional so tests can build a unit of work without instrumentation. */
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly metrics: Metrics = NO_METRICS,
+  ) {}
 
   async run<T>(
     work: (scope: TransactionScope) => Promise<T>,
@@ -50,7 +58,12 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
         },
       );
     } catch (error) {
-      throw translatePersistenceError(error);
+      const translated = translatePersistenceError(error);
+      // Every unit of work goes through here: one place counts all concurrency conflicts.
+      if (translated instanceof TransientError && LOCK_CONFLICT_REASONS.has(translated.reason)) {
+        this.metrics.increment('db_lock_conflicts_total', { reason: translated.reason });
+      }
+      throw translated;
     }
   }
 }
