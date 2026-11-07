@@ -204,7 +204,7 @@ Mensagens em `wager-transactions.fifo` seguem o envelope abaixo e passam pelo **
 | Falha transitória ou inesperada                                    | sem ack; nova tentativa com backoff via visibility timeout |
 | Tentativas esgotadas (`SQS_MAX_RECEIVE_COUNT`)                     | DLQ pela redrive policy da fila                            |
 
-Mensagens de um mesmo `MessageGroupId` são processadas em sequência e grupos diferentes em paralelo. Em `SIGTERM`, o consumidor para de receber, conclui as mensagens em andamento por até `CONSUMER_SHUTDOWN_TIMEOUT_MS` e devolve imediatamente as demais à fila.
+Mensagens de um mesmo `MessageGroupId` são processadas uma de cada vez, e grupos diferentes em paralelo. A ordem do grupo é uma otimização, não uma garantia: se uma mensagem precisa de retry, as seguintes do mesmo lote continuam sendo processadas, e ela volta depois do backoff. A consistência não depende dessa ordem, porque cada operação passa pelo lock da wallet, e uma referência que ainda não chegou fica em `PENDING_REFERENCE`. Em `SIGTERM`, o consumidor para de receber, conclui as mensagens em andamento por até `CONSUMER_SHUTDOWN_TIMEOUT_MS` e devolve imediatamente as demais à fila.
 
 **Coerência de timeouts:** o processamento de uma mensagem é limitado por `DATABASE_LOCK_TIMEOUT_MS` + `DATABASE_STATEMENT_TIMEOUT_MS` (5 s + 15 s), abaixo do visibility timeout da fila (30 s), e `CONSUMER_SHUTDOWN_TIMEOUT_MS` (10 s) fica abaixo do `stop_grace_period` do container (30 s). Ao alterar qualquer um desses valores, mantenha essas relações.
 
