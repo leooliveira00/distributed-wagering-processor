@@ -7,6 +7,8 @@ export const FAILURE_MESSAGES: Readonly<Record<FailureCode, string>> = {
   [FailureCode.InsufficientFunds]: 'Insufficient funds for this bet',
   [FailureCode.ReversalInsufficientFunds]:
     'Reversing this transaction would make the balance negative',
+  [FailureCode.BalanceLimitExceeded]:
+    'This credit would push the balance past the largest amount a wallet can hold',
   [FailureCode.ReferenceNotFound]: 'The referenced transaction never arrived',
   [FailureCode.ReferenceKindNotAllowed]: 'This operation cannot reference that kind of transaction',
   [FailureCode.ReferenceContextMismatch]:

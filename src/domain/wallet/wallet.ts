@@ -2,7 +2,11 @@ import { CurrencyMismatchError } from '../money/money.errors';
 import { Money } from '../money/money';
 import { LedgerDirection } from './ledger-direction';
 import { WalletLedgerEntry } from './wallet-ledger-entry';
-import { InsufficientFundsError, InvalidWalletError } from './wallet.errors';
+import {
+  BalanceLimitExceededError,
+  InsufficientFundsError,
+  InvalidWalletError,
+} from './wallet.errors';
 
 export interface WalletState {
   id: string;
@@ -127,8 +131,16 @@ export class Wallet {
     return this.apply(LedgerDirection.Debit, money, movement);
   }
 
-  credit(money: Money, movement: MovementProps): WalletLedgerEntry {
+  /** Whether the balance can take this credit without passing the storable maximum. */
+  canCredit(money: Money): boolean {
     this.assertSameCurrency(money);
+    return !this._balance.add(money).isGreaterThan(Money.max(this.currency));
+  }
+
+  credit(money: Money, movement: MovementProps): WalletLedgerEntry {
+    if (!this.canCredit(money)) {
+      throw new BalanceLimitExceededError(this.id, this._balance, money);
+    }
     return this.apply(LedgerDirection.Credit, money, movement);
   }
 

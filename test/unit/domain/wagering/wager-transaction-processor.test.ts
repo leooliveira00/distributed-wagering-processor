@@ -114,6 +114,13 @@ describe('WIN', () => {
     expect(wallet.balance.equals(brl('150.00'))).toBe(true);
   });
 
+  it('is rejected with BALANCE_LIMIT_EXCEEDED when the balance could not hold it', () => {
+    const wallet = openWallet('999999999999999999.99');
+    const win = newTransaction(Kind.Win, { money: brl('0.01') });
+
+    expectRejected(win, wallet, FailureCode.BalanceLimitExceeded, () => run(win, wallet));
+  });
+
   it('links to the BET of the same round when referenced', () => {
     const wallet = openWallet('100.00');
     const bet = processedTransaction(Kind.Bet);

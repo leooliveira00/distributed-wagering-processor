@@ -33,6 +33,7 @@ describe('dispositionOfResult', () => {
     [Status.Processed, 'processed'],
     [Status.PendingReference, 'pending_reference'],
     [Status.Rejected, 'rejected'],
+    [Status.Failed, 'failed'], // terminal: redelivering the message cannot change it
   ] as const)('acks a %s transaction', (status, outcome) => {
     expect(dispositionOfResult(result({ status }))).toEqual({ action: 'ack', outcome });
   });

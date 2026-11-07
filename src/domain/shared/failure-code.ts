@@ -15,6 +15,8 @@ export enum FailureCode {
   InsufficientFunds = 'INSUFFICIENT_FUNDS',
   /** A reversal (ROLLBACK of a credit) would make the balance negative (rule 7.9). */
   ReversalInsufficientFunds = 'REVERSAL_INSUFFICIENT_FUNDS',
+  /** A credit would push the balance past the largest storable amount (numeric(20,2)). */
+  BalanceLimitExceeded = 'BALANCE_LIMIT_EXCEEDED',
   /** The referenced transaction never arrived within the retry limit (rule 7.1). */
   ReferenceNotFound = 'REFERENCE_NOT_FOUND',
   /** The referenced transaction kind cannot be targeted by this operation (rule 7.3). */

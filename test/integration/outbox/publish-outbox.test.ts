@@ -22,7 +22,9 @@ const LEASE_MS = 500;
 const OPTIONS: PublishOutboxOptions = {
   batchSize: 50,
   leaseMs: LEASE_MS,
-  retry: { baseMs: 200, capMs: 1_000 },
+  // Wide enough that a slow machine (the full suite spawns real processes) cannot make a retry
+  // due between scheduling it and checking that it is not due yet.
+  retry: { baseMs: 1_000, capMs: 4_000 },
 };
 
 class SimulatedCrash extends Error {}
@@ -242,9 +244,9 @@ describe('PublishOutbox', () => {
     const first = await publisher.runOnce();
     const afterFirst = await f.outboxState();
     const notYetDue = await publisher.runOnce();
-    await Bun.sleep(350); // past the first backoff (200 ms)
+    await Bun.sleep(1_300); // past the first backoff (1 s)
     const second = await publisher.runOnce();
-    await Bun.sleep(600); // past the second backoff (400 ms)
+    await Bun.sleep(2_300); // past the second backoff (2 s)
     const third = await publisher.runOnce();
     const received = await f.queue.drain();
 
@@ -303,7 +305,7 @@ describe('PublishOutbox', () => {
 
     const first = await publisher.runOnce();
     const afterFirst = await f.outboxState();
-    await Bun.sleep(350); // past the first backoff (200 ms)
+    await Bun.sleep(1_300); // past the first backoff (1 s)
     const second = await publisher.runOnce();
     const received = await f.queue.drain();
 

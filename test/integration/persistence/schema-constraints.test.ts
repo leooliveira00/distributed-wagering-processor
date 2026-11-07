@@ -580,6 +580,151 @@ describe('wallet_ledger_entries', () => {
   });
 });
 
+describe('transaction immutability and ledger coherence (README §5.9, §6.3)', () => {
+  /** Moves the wallet by `delta` with one ledger entry, all in one SQL transaction. */
+  async function moveBalance(
+    wallet: Awaited<ReturnType<typeof seedWallet>>,
+    transaction: Record<string, unknown>,
+    entry: { direction: 'DEBIT' | 'CREDIT'; amount: string; after: string },
+  ): Promise<void> {
+    await db.sql.begin(async (tx) => {
+      await insertRow(tx, 'wager_transactions', transaction);
+      await tx.unsafe('update wallets set balance = $1, version = 2 where id = $2', [
+        entry.after,
+        wallet.walletId,
+      ]);
+      await insertRow(
+        tx,
+        'wallet_ledger_entries',
+        ledgerRow({
+          wallet_id: wallet.walletId,
+          transaction_id: transaction.id as string,
+          direction: entry.direction,
+          amount: entry.amount,
+          balance_before: '100.00',
+          balance_after: entry.after,
+          wallet_version: 2,
+        }),
+      );
+    });
+  }
+
+  const processedBet = async () => {
+    const wallet = await seedWallet(db.sql, '100.00');
+    const betId = await applyDebit(db.sql, wallet, {
+      amount: '25.00',
+      balanceBefore: '100.00',
+      balanceAfter: '75.00',
+      newVersion: 2,
+    });
+    return { wallet, betId };
+  };
+
+  it('never changes the value of a processed transaction', async () => {
+    const { betId } = await processedBet();
+
+    await expectPgError(
+      () =>
+        db.sql.unsafe(`update wager_transactions set amount = '9999.00' where id = $1`, [betId]),
+      { sqlState: SqlState.RestrictViolation, message: /identity and value are immutable/ },
+    );
+  });
+
+  it('never moves a terminal transaction back to another status', async () => {
+    const { betId } = await processedBet();
+
+    await expectPgError(
+      () =>
+        db.sql.unsafe(
+          `update wager_transactions
+              set status = 'REJECTED', failure_code = 'INSUFFICIENT_FUNDS', processed_at = null
+            where id = $1`,
+          [betId],
+        ),
+      { sqlState: SqlState.RestrictViolation, message: /terminal/ },
+    );
+  });
+
+  it('cannot delete a transaction', async () => {
+    const wallet = await seedWallet(db.sql, '100.00');
+    const rejected = transactionRow(wallet.walletId, wallet.playerId, {
+      status: 'REJECTED',
+      failure_code: 'INSUFFICIENT_FUNDS',
+      processed_at: null,
+    });
+    await insertRow(db.sql, 'wager_transactions', rejected);
+
+    await expectPgError(
+      () => db.sql.unsafe('delete from wager_transactions where id = $1', [rejected.id]),
+      { sqlState: SqlState.RestrictViolation, message: /cannot be deleted/ },
+    );
+  });
+
+  it('moves a pending transaction only along the domain transitions', async () => {
+    const wallet = await seedWallet(db.sql, '100.00');
+    const pending = transactionRow(wallet.walletId, wallet.playerId, {
+      kind: 'REFUND',
+      reference_external_transaction_id: 'bet-not-yet',
+      status: 'PENDING_REFERENCE',
+      processed_at: null,
+      next_attempt_at: new Date(),
+      attempts: 1,
+    });
+    await insertRow(db.sql, 'wager_transactions', pending);
+
+    // Allowed: another attempt, then a terminal outcome.
+    await db.sql.unsafe('update wager_transactions set attempts = 2 where id = $1', [pending.id]);
+    await expectPgError(
+      () =>
+        db.sql.unsafe(
+          `update wager_transactions set status = 'PENDING', next_attempt_at = null where id = $1`,
+          [pending.id],
+        ),
+      { sqlState: SqlState.CheckViolation, message: /from PENDING_REFERENCE to PENDING/ },
+    );
+    await db.sql.unsafe(
+      `update wager_transactions
+          set status = 'REJECTED', failure_code = 'REFERENCE_NOT_FOUND', next_attempt_at = null
+        where id = $1`,
+      [pending.id],
+    );
+  });
+
+  it('rejects a ledger entry for a transaction that was not processed (at commit)', async () => {
+    const wallet = await seedWallet(db.sql, '100.00');
+    const rejected = transactionRow(wallet.walletId, wallet.playerId, {
+      status: 'REJECTED',
+      failure_code: 'INSUFFICIENT_FUNDS',
+      processed_at: null,
+    });
+
+    await expectPgError(
+      () => moveBalance(wallet, rejected, { direction: 'DEBIT', amount: '25.00', after: '75.00' }),
+      { sqlState: SqlState.CheckViolation, message: /not PROCESSED/ },
+    );
+  });
+
+  it('rejects a BET recorded as a credit (at commit)', async () => {
+    const wallet = await seedWallet(db.sql, '100.00');
+    const bet = transactionRow(wallet.walletId, wallet.playerId, { observed_balance: '125.00' });
+
+    await expectPgError(
+      () => moveBalance(wallet, bet, { direction: 'CREDIT', amount: '25.00', after: '125.00' }),
+      { sqlState: SqlState.CheckViolation, message: /implies DEBIT/ },
+    );
+  });
+
+  it('rejects an entry whose amount differs from its transaction (at commit)', async () => {
+    const wallet = await seedWallet(db.sql, '100.00');
+    const bet = transactionRow(wallet.walletId, wallet.playerId, { amount: '10.00' });
+
+    await expectPgError(
+      () => moveBalance(wallet, bet, { direction: 'DEBIT', amount: '25.00', after: '75.00' }),
+      { sqlState: SqlState.CheckViolation, message: /differs from its transaction amount/ },
+    );
+  });
+});
+
 describe('inbox_messages', () => {
   const inboxRow = (overrides: Record<string, unknown> = {}) => ({
     consumer_name: 'wager-transactions-consumer',

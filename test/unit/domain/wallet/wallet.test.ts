@@ -5,6 +5,7 @@ import { LedgerDirection } from '../../../../src/domain/wallet/ledger-direction'
 import { Wallet } from '../../../../src/domain/wallet/wallet';
 import { type WalletLedgerEntry } from '../../../../src/domain/wallet/wallet-ledger-entry';
 import {
+  BalanceLimitExceededError,
   InsufficientFundsError,
   InvalidWalletError,
 } from '../../../../src/domain/wallet/wallet.errors';
@@ -124,10 +125,24 @@ describe('Wallet.debit / credit', () => {
     expect(wallet.updatedAt).toEqual(AT);
   });
 
+  it('credits up to the storable maximum, and not one cent past it', () => {
+    const wallet = openWallet('999999999999999999.98');
+
+    expect(wallet.canCredit(brl('0.01'))).toBe(true);
+    expect(wallet.canCredit(brl('0.02'))).toBe(false);
+    expect(() => wallet.credit(brl('0.02'), movement())).toThrow(BalanceLimitExceededError);
+    expect(wallet.balance.equals(brl('999999999999999999.98'))).toBe(true);
+    expect(wallet.version).toBe(1);
+
+    wallet.credit(brl('0.01'), movement());
+    expect(wallet.balance.toJSON().amount).toBe('999999999999999999.99');
+  });
+
   it.each([
     ['debit', (wallet: Wallet) => wallet.debit(usd('1.00'), movement())],
     ['credit', (wallet: Wallet) => wallet.credit(usd('1.00'), movement())],
     ['canDebit', (wallet: Wallet) => wallet.canDebit(usd('1.00'))],
+    ['canCredit', (wallet: Wallet) => wallet.canCredit(usd('1.00'))],
   ])('%s rejects a different currency without changing state', (_, operation) => {
     const wallet = openWallet('100.00');
 

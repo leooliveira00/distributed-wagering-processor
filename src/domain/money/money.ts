@@ -15,6 +15,8 @@ const SCALE = 2;
  * by construction, since none of them match.
  */
 const AMOUNT_PATTERN = /^(0|[1-9]\d{0,17})\.\d{2}$/;
+/** Largest value the pattern above admits, and the capacity of a `numeric(20,2)` column. */
+const MAX_AMOUNT = '999999999999999999.99';
 
 /** Format check only (three uppercase letters); the code list itself is not validated. */
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
@@ -64,6 +66,15 @@ export class Money {
     return new Money(new MoneyDecimal(0), Money.assertCurrency(currency));
   }
 
+  /**
+   * The largest amount a balance can hold: 18 integer digits and 2 decimals, the input contract
+   * above and the `numeric(20,2)` columns. A balance past it cannot be stored, so crediting it
+   * must be refused as a business rule, not discovered as a database error.
+   */
+  static max(currency: string): Money {
+    return new Money(new MoneyDecimal(MAX_AMOUNT), Money.assertCurrency(currency));
+  }
+
   add(other: Money): Money {
     this.assertSameCurrency(other);
     return Money.of(this.value.plus(other.value), this.currency);
@@ -93,6 +104,11 @@ export class Money {
   isLessThan(other: Money): boolean {
     this.assertSameCurrency(other);
     return this.value.lessThan(other.value);
+  }
+
+  isGreaterThan(other: Money): boolean {
+    this.assertSameCurrency(other);
+    return this.value.greaterThan(other.value);
   }
 
   /** Values in different currencies are never equal; this does not throw. */

@@ -50,6 +50,13 @@ export interface WagerTransactionRepository {
    * without counting it as a reference attempt. Prevents one bad row from blocking the worker.
    */
   deferPending(id: string, delayMs: number): Promise<void>;
+  /**
+   * Like `deferPending`, for a failure that is not a temporary infrastructure one: also counts it
+   * in `processing_failures` and returns the new count (0 if the row is no longer pending).
+   */
+  recordProcessingFailure(id: string, delayMs: number): Promise<number>;
+  /** Locks and loads one PENDING_REFERENCE transaction by id (FOR UPDATE), if still pending. */
+  lockPendingById(id: string): Promise<WagerTransaction | undefined>;
   add(transaction: WagerTransaction): void;
   save(transaction: WagerTransaction): void;
 }

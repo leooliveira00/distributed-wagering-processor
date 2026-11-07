@@ -17,7 +17,8 @@ import { InvalidWalletError } from '../../domain/wallet/wallet.errors';
 export type DeadLetterReason =
   'malformed_message' | 'invalid_payload' | 'wallet_not_found' | 'integrity_violation';
 
-export type AckOutcome = 'processed' | 'pending_reference' | 'rejected' | 'duplicate' | 'conflict';
+export type AckOutcome =
+  'processed' | 'pending_reference' | 'rejected' | 'failed' | 'duplicate' | 'conflict';
 
 /**
  * What the consumer does with a message (README §10):
@@ -35,6 +36,7 @@ const OUTCOME_BY_STATUS: Readonly<Partial<Record<WagerTransactionStatus, AckOutc
   [WagerTransactionStatus.Processed]: 'processed',
   [WagerTransactionStatus.PendingReference]: 'pending_reference',
   [WagerTransactionStatus.Rejected]: 'rejected',
+  [WagerTransactionStatus.Failed]: 'failed', // terminal: retrying the message cannot change it
 };
 
 /** Domain errors meaning "this input breaks the contract": never fixable by retrying. */
