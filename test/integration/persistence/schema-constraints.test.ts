@@ -357,14 +357,18 @@ describe('wager_transactions', () => {
   });
 
   describe('reversal uniqueness (D6)', () => {
+    /** The BET external id every reversal below names (the schema checks it matches). */
+    let betExternalId = '';
+
     async function seedProcessedBet() {
       const wallet = await seedWallet(db.sql, '100.00');
-      const betId = await applyDebit(db.sql, wallet, {
-        amount: '25.00',
-        balanceBefore: '100.00',
-        balanceAfter: '75.00',
-        newVersion: 2,
-      });
+      betExternalId = `bet-${crypto.randomUUID()}`;
+      const betId = await applyDebit(
+        db.sql,
+        wallet,
+        { amount: '25.00', balanceBefore: '100.00', balanceAfter: '75.00', newVersion: 2 },
+        { external_transaction_id: betExternalId, idempotency_key: `provider-a:${betExternalId}` },
+      );
       return { wallet, betId };
     }
 
@@ -374,7 +378,7 @@ describe('wager_transactions', () => {
       overrides: Record<string, unknown>,
     ) =>
       transactionRow(wallet.walletId, wallet.playerId, {
-        reference_external_transaction_id: 'bet',
+        reference_external_transaction_id: betExternalId,
         reference_transaction_id: betId,
         ...overrides,
       });
@@ -750,6 +754,60 @@ describe('transaction immutability and ledger coherence (README §5.9, §6.3)', 
     );
     // A LOSS never moves the balance: processed without an entry, by definition.
     await insertRow(db.sql, 'wager_transactions', loss(wallet, {}));
+  });
+
+  it("rejects a reversal of another wallet's transaction", async () => {
+    const { wallet, betId } = await processedBet();
+    const other = await seedWallet(db.sql, '100.00');
+    const [bet] = await db.sql.unsafe<{ external_transaction_id: string }[]>(
+      'select external_transaction_id from wager_transactions where id = $1',
+      [betId],
+    );
+
+    await expectPgError(
+      () =>
+        insertRow(
+          db.sql,
+          'wager_transactions',
+          transactionRow(other.walletId, other.playerId, {
+            kind: 'ROLLBACK',
+            reference_external_transaction_id: bet?.external_transaction_id,
+            reference_transaction_id: betId,
+          }),
+        ),
+      { sqlState: SqlState.CheckViolation, message: /outside its provider, player, wallet/ },
+    );
+    expect(wallet.walletId).not.toBe(other.walletId);
+  });
+
+  it('rejects a reversal of a different amount than its reference', async () => {
+    const { wallet, betId } = await processedBet();
+    const [bet] = await db.sql.unsafe<{ external_transaction_id: string }[]>(
+      'select external_transaction_id from wager_transactions where id = $1',
+      [betId],
+    );
+
+    await expectPgError(
+      () =>
+        insertRow(
+          db.sql,
+          'wager_transactions',
+          transactionRow(wallet.walletId, wallet.playerId, {
+            kind: 'REFUND',
+            amount: '10.00',
+            reference_external_transaction_id: bet?.external_transaction_id,
+            reference_transaction_id: betId,
+          }),
+        ),
+      { sqlState: SqlState.CheckViolation, message: /instead of the referenced amount/ },
+    );
+  });
+
+  it('rejects a wallet born past version 1', async () => {
+    await expectPgError(() => insertRow(db.sql, 'wallets', walletRow({ version: 7 })), {
+      sqlState: SqlState.CheckViolation,
+      message: /must start at version 1/,
+    });
   });
 
   it('rejects an entry whose amount differs from its transaction (at commit)', async () => {
