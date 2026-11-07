@@ -18,10 +18,10 @@ concurrency:
 jobs:
   checks:
     name: Typecheck, lint, format and unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
@@ -33,7 +33,7 @@ jobs:
 
   tests:
     name: Full test suite (PostgreSQL and SQS)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # The same images and versions as docker-compose.yml, on the same host ports, so the suites
     # run with their defaults: nothing here differs from a local `docker compose up -d postgres sqs`.
@@ -61,7 +61,7 @@ jobs:
           --health-timeout 3s
           --health-retries 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
