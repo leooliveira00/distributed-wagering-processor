@@ -35,6 +35,15 @@ async function indexExists(name: string): Promise<boolean> {
   return rows[0]?.exists ?? false;
 }
 
+async function columnExists(table: string, column: string): Promise<boolean> {
+  const rows: { exists: boolean }[] = await db.sql.unsafe(
+    `select exists (select 1 from information_schema.columns
+                     where table_schema = 'public' and table_name = $1 and column_name = $2)`,
+    [table, column],
+  );
+  return rows[0]?.exists ?? false;
+}
+
 const DEPENDENTS_INDEX = 'wager_transactions_pending_dependents_idx';
 
 beforeAll(async () => {
@@ -58,7 +67,9 @@ describe('migrations', () => {
       'Migration20261106000100_initial_schema',
       'Migration20261106000200_ledger_integrity',
       'Migration20261106000300_pending_dependents_index',
+      'Migration20261107000400_pending_processing_failures',
     ]);
+    expect(await columnExists('wager_transactions', 'processing_failures')).toBe(true);
     expect(await tables()).toEqual(TABLES);
     expect(await triggers()).toEqual([
       'wallet_ledger_entries_match_wallet',
@@ -71,6 +82,10 @@ describe('migrations', () => {
   });
 
   it('revert one migration at a time', async () => {
+    await db.orm.migrator.down();
+    expect(await columnExists('wager_transactions', 'processing_failures')).toBe(false);
+    expect(await indexExists(DEPENDENTS_INDEX)).toBe(true);
+
     await db.orm.migrator.down();
     expect(await indexExists(DEPENDENTS_INDEX)).toBe(false);
     expect(await triggers()).toHaveLength(5);

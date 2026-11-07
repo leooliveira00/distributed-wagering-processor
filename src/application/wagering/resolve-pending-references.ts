@@ -1,5 +1,7 @@
+import { WagerTransactionFailed } from '../../domain/messaging/events/wager-transaction-failed';
+import { OutboxMessage } from '../../domain/messaging/outbox-message';
 import { backoffDelayMs } from '../../domain/shared/backoff';
-import { type FailureCode } from '../../domain/shared/failure-code';
+import { FailureCode } from '../../domain/shared/failure-code';
 import { type WagerTransaction } from '../../domain/wagering/wager-transaction';
 import { WagerTransactionStatus } from '../../domain/wagering/wager-transaction-status';
 import { TransientError } from '../errors';
@@ -14,6 +16,11 @@ import { type PendingReferencePolicy } from './wager-command';
 export interface ResolvePendingReferencesOptions {
   /** Most transactions attempted per pass; each one is its own SQL transaction. */
   batchSize: number;
+  /**
+   * Attempts that may fail for a reason other than a temporary infrastructure failure before the
+   * transaction is marked FAILED / PROCESSING_FAILED. Temporary failures never count.
+   */
+  maxProcessingFailures: number;
 }
 
 /** processed/rejected are terminal; rescheduled keeps waiting; failed was deferred after an error. */
@@ -113,7 +120,7 @@ export class ResolvePendingReferences {
     } catch (error) {
       // Nothing claimed: the database itself is failing. Let the polling loop back off.
       if (!claim.transaction) throw error;
-      await this.defer(claim.transaction, error);
+      await this.defer(claim.transaction, error, correlationId);
       return 'failed';
     }
     if (!committed) return undefined;
@@ -203,11 +210,21 @@ export class ResolvePendingReferences {
   }
 
   /**
-   * An attempt that failed unexpectedly (lock timeout on a hot wallet, a bug, bad data) is
-   * pushed back with the same backoff, without counting as a reference attempt. Otherwise the
-   * most overdue row would be picked again immediately and block every row behind it.
+   * An attempt that failed unexpectedly is pushed back with the same backoff, without counting
+   * as a reference attempt; otherwise the most overdue row would be picked again immediately and
+   * block every row behind it.
+   *
+   * - A temporary infrastructure failure (lock timeout on a hot wallet, database unreachable) is
+   *   expected and never counts: an outage must not push valid transactions to FAILED.
+   * - Anything else (a bug, invalid data) would fail the same way forever. It is counted, and
+   *   past `maxProcessingFailures` the transaction becomes FAILED / PROCESSING_FAILED: terminal,
+   *   auditable and announced by WagerTransactionFailed, instead of an endless retry loop.
    */
-  private async defer(transaction: WagerTransaction, error: unknown): Promise<void> {
+  private async defer(
+    transaction: WagerTransaction,
+    error: unknown,
+    correlationId: string,
+  ): Promise<void> {
     const delayMs = backoffDelayMs(transaction.attempts + 1, this.policy.backoff);
     this.metrics.increment('pending_reference_failures_total');
     const fields = {
@@ -216,12 +233,60 @@ export class ResolvePendingReferences {
       delayMs,
       error: error instanceof Error ? error.message : String(error),
     };
-    // A lock timeout on a hot wallet is expected under load; anything else is a defect.
     if (error instanceof TransientError) {
       this.logger.warn('Pending reference attempt failed, deferred', fields);
-    } else {
-      this.logger.error('Pending reference attempt failed, deferred', fields);
+      await this.unitOfWork.run((scope) =>
+        scope.transactions.deferPending(transaction.id, delayMs),
+      );
+      return;
     }
-    await this.unitOfWork.run((scope) => scope.transactions.deferPending(transaction.id, delayMs));
+
+    const failures = await this.unitOfWork.run((scope) =>
+      scope.transactions.recordProcessingFailure(transaction.id, delayMs),
+    );
+    this.logger.error('Pending reference attempt failed, deferred', {
+      ...fields,
+      processingFailures: failures,
+    });
+    if (failures >= this.options.maxProcessingFailures) {
+      await this.failPermanently(transaction.id, correlationId, fields.error);
+    }
+  }
+
+  /** FAILED / PROCESSING_FAILED, with its event in the same SQL transaction (outbox). */
+  private async failPermanently(id: string, correlationId: string, error: string): Promise<void> {
+    const failed = await this.unitOfWork.run(async (scope) => {
+      const pending = await scope.transactions.lockPendingById(id);
+      if (!pending) return undefined; // decided meanwhile by another path
+      pending.fail(FailureCode.ProcessingFailed);
+      scope.transactions.save(pending);
+      const at = this.clock.now();
+      scope.outbox.add(
+        OutboxMessage.enqueue(
+          WagerTransactionFailed.from(pending, {
+            eventId: this.ids.next(),
+            correlationId,
+            causationId: pending.id,
+            occurredAt: at,
+          }),
+        ),
+      );
+      return pending;
+    });
+    if (!failed) return;
+    this.metrics.increment('wager_transactions_total', {
+      kind: failed.kind,
+      status: failed.status,
+      source: 'pending-worker',
+    });
+    this.logger.error('Pending transaction failed permanently', {
+      transactionId: failed.id,
+      providerId: failed.providerId,
+      externalTransactionId: failed.externalTransactionId,
+      failureCode: failed.failureCode,
+      processingFailures: this.options.maxProcessingFailures,
+      error,
+      correlationId,
+    });
   }
 }

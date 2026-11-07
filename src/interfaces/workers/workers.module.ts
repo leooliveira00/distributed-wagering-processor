@@ -66,6 +66,7 @@ import { SqsConsumerWorker } from './sqs-consumer.worker';
       ) =>
         new ResolvePendingReferences(unitOfWork, ids, clock, policy, metrics, logger, faults, {
           batchSize: env.PENDING_REFERENCE_BATCH_SIZE,
+          maxProcessingFailures: env.PENDING_REFERENCE_MAX_PROCESSING_FAILURES,
         }),
     },
     OutboxPublisherWorker,

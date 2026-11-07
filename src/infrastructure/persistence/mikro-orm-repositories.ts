@@ -180,6 +180,27 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
     );
   }
 
+  async recordProcessingFailure(id: string, delayMs: number): Promise<number> {
+    const rows = await this.em.execute<{ processing_failures: number }[]>(
+      `update wager_transactions
+          set processing_failures = processing_failures + 1,
+              next_attempt_at = now() + make_interval(secs => ? / 1000.0)
+        where id = ? and status = 'PENDING_REFERENCE'
+       returning processing_failures`,
+      [delayMs, id],
+    );
+    return rows[0]?.processing_failures ?? 0;
+  }
+
+  async lockPendingById(id: string): Promise<WagerTransaction | undefined> {
+    const record = await this.em.findOne(
+      WagerTransactionRecord,
+      { id, status: WagerTransactionStatus.PendingReference },
+      { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true },
+    );
+    return record ? toWagerTransaction(record) : undefined;
+  }
+
   add(transaction: WagerTransaction): void {
     this.em.persist(
       this.em.create(WagerTransactionRecord, {

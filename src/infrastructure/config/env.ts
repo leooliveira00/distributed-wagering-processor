@@ -47,6 +47,8 @@ const envSchema = z
     /** Pending-reference worker (role `pending`): idle delay between scans and items per scan. */
     PENDING_REFERENCE_POLL_INTERVAL_MS: z.coerce.number().int().min(10).default(500),
     PENDING_REFERENCE_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(20),
+    /** Non-temporary failures of one pending transaction before it becomes FAILED. */
+    PENDING_REFERENCE_MAX_PROCESSING_FAILURES: z.coerce.number().int().min(1).default(3),
 
     AWS_REGION: z.string().min(1).default('us-east-1'),
     AWS_ENDPOINT_URL: z.url().optional(),

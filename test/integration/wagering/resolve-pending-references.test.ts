@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import { TransientError } from '../../../src/application/errors';
 import { type FaultInjector, type FaultPoint } from '../../../src/application/ports/fault-injector';
 import { type UnitOfWork } from '../../../src/application/ports/unit-of-work';
 import {
@@ -65,12 +66,14 @@ beforeEach(async () => {
 class ThrowingFaults implements FaultInjector {
   constructor(
     private readonly point: FaultPoint,
-    private remaining: number,
+    public remaining: number,
+    private readonly failure: (point: FaultPoint) => Error = (at) =>
+      new Error(`simulated failure at ${at}`),
   ) {}
   trigger(point: FaultPoint): void {
     if (point !== this.point || this.remaining <= 0) return;
     this.remaining--;
-    throw new Error(`simulated failure at ${point}`);
+    throw this.failure(point);
   }
 }
 
@@ -78,7 +81,7 @@ const NO_FAULTS: FaultInjector = { trigger: () => undefined };
 
 function worker(
   policy: PendingReferencePolicy,
-  options: { batchSize?: number; faults?: FaultInjector } = {},
+  options: { batchSize?: number; faults?: FaultInjector; maxProcessingFailures?: number } = {},
 ) {
   const metrics = new PrometheusMetrics();
   const logger = new RecordingLogger();
@@ -90,7 +93,10 @@ function worker(
     metrics,
     logger,
     options.faults ?? NO_FAULTS,
-    { batchSize: options.batchSize ?? 20 },
+    {
+      batchSize: options.batchSize ?? 20,
+      maxProcessingFailures: options.maxProcessingFailures ?? 3,
+    },
   );
   return { resolver, metrics, logger };
 }
@@ -466,6 +472,78 @@ describe('failures', () => {
     ).toBe(true);
     // Deferred: not picked again before its new time.
     expect((await resolver.runOnce()).attempted).toBe(0);
+  });
+
+  it('marks a transaction that keeps failing deterministically as FAILED, once', async () => {
+    const submit = submitter(BUSY);
+    const faults = new ThrowingFaults('pending:before-commit', 100); // a bug: fails every time
+    const { resolver, metrics, logger } = worker(BUSY, { faults, maxProcessingFailures: 3 });
+    const wallet = await openWallet('100.00');
+
+    const refund = await submit.execute(
+      command(wallet, Kind.Refund, { referenceExternalTransactionId: 'bet-1' }),
+      CONTEXT,
+    );
+    await submit.execute(command(wallet, Kind.Bet, { externalTransactionId: 'bet-1' }), CONTEXT);
+    await runUntil([resolver], async () => (await row(refund.transactionId)).status === 'FAILED');
+
+    expect(await row(refund.transactionId)).toMatchObject({
+      status: Status.Failed,
+      failure_code: FailureCode.ProcessingFailed,
+      attempts: 1, // failures never count as searches for the reference
+      due_in_seconds: null,
+    });
+    expect(faults.remaining).toBe(97); // exactly 3 attempts, then no more
+    expect((await resolver.runOnce()).attempted).toBe(0); // terminal: never picked again
+    expect(await balanceOf(wallet.id)).toBe('75.00'); // the BET only; the REFUND never applied
+    await expectLedgerConsistent(db.sql, wallet.id);
+    expect(await eventTypes(refund.transactionId)).toEqual([
+      'WagerTransactionPendingReference',
+      'WagerTransactionFailed',
+    ]);
+    expect(
+      await metrics.counterValue('wager_transactions_total', {
+        kind: Kind.Refund,
+        status: Status.Failed,
+        source: 'pending-worker',
+      }),
+    ).toBe(1);
+    expect(
+      logger.lines.some(
+        (line) =>
+          line.level === 'error' && line.message === 'Pending transaction failed permanently',
+      ),
+    ).toBe(true);
+  });
+
+  it('never fails a transaction for temporary failures, however many', async () => {
+    const submit = submitter(BUSY);
+    const outage = new ThrowingFaults(
+      'pending:before-commit',
+      10,
+      () => new TransientError('database unreachable (simulated)', { reason: 'connection' }),
+    );
+    const { resolver } = worker(BUSY, { faults: outage, maxProcessingFailures: 3 });
+    const wallet = await openWallet('100.00');
+
+    const refund = await submit.execute(
+      command(wallet, Kind.Refund, { referenceExternalTransactionId: 'bet-1' }),
+      CONTEXT,
+    );
+    await submit.execute(command(wallet, Kind.Bet, { externalTransactionId: 'bet-1' }), CONTEXT);
+    await runUntil(
+      [resolver],
+      async () => (await row(refund.transactionId)).status === 'PROCESSED',
+    );
+
+    expect(outage.remaining).toBe(0); // all 10 temporary failures happened, none of them counted
+    const [counted] = await db.sql.unsafe<{ processing_failures: number }[]>(
+      'select processing_failures from wager_transactions where id = $1',
+      [refund.transactionId],
+    );
+    expect(counted?.processing_failures).toBe(0);
+    expect(await balanceOf(wallet.id)).toBe('100.00'); // BET then REFUND, both applied once
+    await expectLedgerConsistent(db.sql, wallet.id);
   });
 });
 

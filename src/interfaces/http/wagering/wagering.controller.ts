@@ -41,6 +41,9 @@ const STATUS_BY_OUTCOME: Readonly<Partial<Record<WagerTransactionStatus, number>
   [WagerTransactionStatus.Processed]: HttpStatus.CREATED,
   [WagerTransactionStatus.PendingReference]: HttpStatus.ACCEPTED,
   [WagerTransactionStatus.Rejected]: HttpStatus.UNPROCESSABLE_ENTITY,
+  // Replay of a transaction the pending worker gave up on: a permanent server-side failure, not
+  // a business rejection. The envelope says retryable=false: resending will not change it.
+  [WagerTransactionStatus.Failed]: HttpStatus.INTERNAL_SERVER_ERROR,
 };
 
 type SubmissionResponse = WagerSubmissionResult & Partial<HttpErrorBody>;
@@ -86,7 +89,10 @@ export class WageringController {
     );
 
     response.status(STATUS_BY_OUTCOME[result.status] ?? HttpStatus.OK);
-    if (result.status === WagerTransactionStatus.Rejected && result.failureCode !== null) {
+    const decidedAgainst =
+      result.status === WagerTransactionStatus.Rejected ||
+      result.status === WagerTransactionStatus.Failed;
+    if (decidedAgainst && result.failureCode !== null) {
       // Rejections carry the transaction (it is persisted and auditable) and the uniform
       // error envelope used by every other 4xx/5xx, so clients handle all errors one way.
       return {
