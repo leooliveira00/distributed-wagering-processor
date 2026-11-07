@@ -1,0 +1,114 @@
+name: wagering
+
+x-app-env: &app-env
+  NODE_ENV: production
+  LOG_LEVEL: info
+  DATABASE_HOST: postgres
+  DATABASE_PORT: '5432'
+  DATABASE_NAME: wagering
+  DATABASE_USER: wagering
+  DATABASE_PASSWORD: wagering
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT_URL: http://sqs:4566
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_DB: wagering
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+    ports:
+      # 55432 on the host avoids clashing with a locally installed PostgreSQL.
+      - '55432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wagering -d wagering']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  sqs:
+    # LocalStack's current images require an auth token; MiniStack is the README-approved free alternative.
+    image: ministackorg/ministack:1.5.38
+    ports:
+      - '4566:4566'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python3',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://localhost:4566/_ministack/health')",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  sqs-init:
+    build: .
+    command: ['bun', 'scripts/sqs-bootstrap.ts']
+    environment: *app-env
+    depends_on:
+      sqs:
+        condition: service_healthy
+    restart: 'no'
+
+  migrate:
+    build: .
+    command: ['bun', 'scripts/migrate.ts', 'up']
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  app: &app
+    build: .
+    environment:
+      <<: *app-env
+      PORT: '3000'
+      APP_ROLES: api,consumer,outbox,pending
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sqs-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    # Compose has a single health status, meaning "ready for traffic": readiness (PostgreSQL and
+    # SQS reachable). /health/live stays for orchestrators with a separate liveness probe.
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'bun',
+          '-e',
+          "fetch('http://localhost:3000/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    stop_grace_period: 30s
+
+  # `docker compose --profile cluster up -d`: two more independent processes with every role,
+  # sharing only PostgreSQL and SQS with `app` (README §8: three or more instances).
+  app-2:
+    <<: *app
+    ports:
+      - '3001:3000'
+    profiles: [cluster]
+
+  app-3:
+    <<: *app
+    ports:
+      - '3002:3000'
+    profiles: [cluster]
+
+volumes:
+  pgdata:
