@@ -56,6 +56,19 @@ describe('loadEnv', () => {
     ).toThrow(InvalidEnvironmentError);
   });
 
+  it('bounds every SQS call by default, above the long-poll wait', () => {
+    const env = loadEnv({});
+
+    expect(env.SQS_CONNECT_TIMEOUT_MS).toBe(3_000);
+    expect(env.SQS_REQUEST_TIMEOUT_MS).toBeGreaterThan(env.SQS_CONSUMER_WAIT_TIME_SECONDS * 1_000);
+  });
+
+  it('rejects an SQS request timeout that would cut a long poll short', () => {
+    expect(() =>
+      loadEnv({ SQS_CONSUMER_WAIT_TIME_SECONDS: '20', SQS_REQUEST_TIMEOUT_MS: '20000' }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
   it('parses fault injection points for test environments', () => {
     const env = loadEnv({
       NODE_ENV: 'test',

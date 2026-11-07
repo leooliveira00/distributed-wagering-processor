@@ -61,6 +61,12 @@ const envSchema = z
     SQS_CONSUMER_NAME: z.string().min(1).max(128).default('wager-transactions-consumer'),
     SQS_CONSUMER_BATCH_SIZE: z.coerce.number().int().min(1).max(10).default(10),
     SQS_CONSUMER_WAIT_TIME_SECONDS: z.coerce.number().int().min(0).max(20).default(10),
+    /**
+     * Bounds every SQS call: without them a call on a silent connection (network partition)
+     * never returns, and the consumer or the outbox publisher stops for good.
+     */
+    SQS_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(1).default(3_000),
+    SQS_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1).default(25_000),
     SQS_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(1).default(1_000),
     SQS_RETRY_MAX_DELAY_MS: z.coerce.number().int().min(1).default(60_000),
     /** Must stay below the container stop grace period (docker-compose: 30s). */
@@ -110,6 +116,15 @@ const envSchema = z
         code: 'custom',
         path: ['DATABASE_QUERY_TIMEOUT_MS'],
         message: 'Must be greater than DATABASE_STATEMENT_TIMEOUT_MS',
+      });
+    }
+    // A long poll legitimately waits SQS_CONSUMER_WAIT_TIME_SECONDS for messages: the request
+    // timeout must not cut that wait short.
+    if (env.SQS_REQUEST_TIMEOUT_MS <= env.SQS_CONSUMER_WAIT_TIME_SECONDS * 1_000) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SQS_REQUEST_TIMEOUT_MS'],
+        message: 'Must be greater than SQS_CONSUMER_WAIT_TIME_SECONDS (in milliseconds)',
       });
     }
     // A crash switch must never be armed in production, not even by mistake.
