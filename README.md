@@ -4,7 +4,20 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) recebidas de múltiplos provedores de jogos, via HTTP e SQS, mantendo correção financeira sob entregas duplicadas, fora de ordem e concorrentes entre múltiplas instâncias.
 
-Decisões, garantias, trade-offs e limitações estão em [`ARCHITECTURE.md`](ARCHITECTURE.md). Este README cobre setup, comandos, testes, API e uma [demo guiada](#demo-guiada).
+## Em 1 minuto
+
+```bash
+docker compose up -d --build --wait                 # PostgreSQL, SQS (MiniStack), migrations e a aplicação
+bun install && bun test                             # todas as suítes, com PostgreSQL e SQS reais, sem mocks
+docker compose --profile cluster up -d --build --wait   # mais duas instâncias, para a demo
+```
+
+- **Garantias:** nenhum débito ou crédito duplicado, nenhum saldo negativo e nenhum evento confirmado perdido, com 3 instâncias, entregas duplicadas e fora de ordem, processos mortos e quedas do PostgreSQL ou do SQS. Elas valem porque ficam no **PostgreSQL** (lock por wallet, constraints, triggers e outbox), não na memória nem no broker.
+- **Onde está cada coisa:**
+  - decisões, trade-offs e limitações: [`ARCHITECTURE.md`](ARCHITECTURE.md);
+  - teste de carga e análise: [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md);
+  - roteiro de 10 minutos com 3 instâncias: [demo guiada](#demo-guiada);
+  - endpoints e status HTTP: [API](#api).
 
 ## Stack
 

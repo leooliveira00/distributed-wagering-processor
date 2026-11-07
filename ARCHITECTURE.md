@@ -2,6 +2,15 @@
 
 Este documento registra **como** o Distributed Wagering Processor garante as invariantes financeiras e **por que** cada decisão foi tomada. Ele cobre as alternativas consideradas, os trade-offs aceitos e as limitações conhecidas. Setup, comandos e exemplos de uso estão no [README](README.md).
 
+## Resumo das decisões
+
+- **Lock pessimista por wallet** (`SELECT … FOR UPDATE`). Operações da mesma wallet são serializadas e wallets diferentes rodam em paralelo; o custo é a vazão de uma hot wallet, medido no [teste de carga](docs/LOAD_TEST.md) ([seção 4](#4-concorrência)).
+- **Idempotência no banco**, verificada **depois** do lock: constraints únicas por provedor e inbox por mensagem. Um duplicado concorrente espera e vira replay, nunca corrida ([seção 5](#5-idempotência)).
+- **Uma transação SQL por operação:** wallet, transação, ledger, inbox e evento (outbox) são confirmados juntos. Os eventos são publicados depois do commit, por publishers concorrentes com lease ([seção 6](#6-mensageria-inbox-outbox-e-referências-pendentes)).
+- **O banco é a última linha de defesa:** ledger imutável, saldo coerente com o ledger e ledger com as transações (verificados no COMMIT), e transações terminais imutáveis ([seção 3](#3-persistência-e-invariantes-no-banco)).
+- **Referência fora de ordem** fica em `PENDING_REFERENCE`, com backoff no relógio do banco. Uma falha transitória nunca conta; uma falha que se repete leva a `FAILED` ([seção 6](#6-mensageria-inbox-outbox-e-referências-pendentes)).
+- **Principais trade-offs:** hot wallet serializada; eventos chegam pelo menos uma vez e podem chegar fora de ordem entre publishers; autenticação desenhada, mas não implementada ([seções 9 e 12](#12-trade-offs-e-limitações)).
+
 ## Sumário
 
 1. [Visão geral](#1-visão-geral)
@@ -484,9 +493,6 @@ Esta seção é um desenho, não algo implementado. Os itens marcados com **(mud
 
 ## 14. Uso de IA
 
-Este projeto foi desenvolvido com o **Claude Code** como par de programação. A forma de trabalho foi definida por mim e mantida em todas as etapas:
+Desenvolvido com o **Claude Code** como par de programação. As decisões e a revisão foram minhas: cada etapa começou por uma proposta (desenho, alternativas e commits), aprovada antes da implementação, e cada bloco foi revisado contra o enunciado antes de seguir.
 
-- **Desenho antes de código.** Cada etapa foi apresentada como proposta (arquivos, decisões, alternativas e commits) e só foi implementada depois da minha aprovação. Implementação em blocos, com pausa para revisão ao fim de cada um.
-- **Fidelidade ao enunciado como critério de revisão.** Antes de aprovar cada bloco, a pergunta era se ele atendia às premissas do README e às boas práticas de segurança. Essas revisões mudaram o resultado mais de uma vez. Por exemplo: a seed reproduzível dos testes de resiliência e a explicitação de que o saldo negativo sob corrida é coberto pelos testes de concorrência, não pelos de resiliência.
-- **Verificação, não confiança.** Nada foi aceito por parecer certo. Os testes rodam contra PostgreSQL e SQS reais, com processos reais, e cada correção foi validada por **mutação**: remover a correção precisava fazer o teste falhar.
-- **Erros da IA também foram pegos pela verificação.** Por exemplo, um teste de partição de rede que passava pelo motivo errado (o proxy derrubava as conexões e mascarava o travamento) levou à descoberta de dois defeitos reais de produção.
+A confiança vem da verificação, não do código gerado: testes contra PostgreSQL e SQS reais, com processos reais, e **mutação** em cada correção (remover a correção tinha de fazer o teste falhar). Foi assim que apareceram, por exemplo, um teste que passava pelo motivo errado e os defeitos de produção que ele escondia.
