@@ -45,6 +45,31 @@ describe('translatePersistenceError', () => {
     ['a raw serialization failure', pgError('40001'), 'serialization'],
     ['a statement timeout', pgError('57014'), 'statement_timeout'],
     ['a refused connection', pgError('ECONNREFUSED'), 'connection'],
+    // pg / pg-pool raise these with no code at all: the exact driver wording is pinned here.
+    ['a query that got no answer', new Error('Query read timeout'), 'connection'],
+    [
+      'a pool that could not hand out a connection',
+      new Error('timeout exceeded when trying to connect'),
+      'connection',
+    ],
+    [
+      'a connection that could not be opened in time',
+      new Error('Connection terminated due to connection timeout', {
+        cause: new Error('timeout expired'),
+      }),
+      'connection',
+    ],
+    ['a connection lost mid-query', new Error('Connection terminated unexpectedly'), 'connection'],
+    [
+      'a client already broken by a connection error',
+      new Error('Client has encountered a connection error and is not queryable'),
+      'connection',
+    ],
+    [
+      'a driver timeout wrapped by the ORM',
+      new Error('select 1 - wrapped', { cause: new Error('Query read timeout') }),
+      'connection',
+    ],
   ])('classifies %s as transient, with its reason', (_, error, reason) => {
     const translated = translatePersistenceError(error);
     expect(translated).toBeInstanceOf(TransientError);

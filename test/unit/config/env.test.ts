@@ -40,6 +40,35 @@ describe('loadEnv', () => {
     expect(() => loadEnv(source)).toThrow(InvalidEnvironmentError);
   });
 
+  it('bounds database connections and silent queries on the client side by default', () => {
+    const env = loadEnv({});
+
+    expect(env.DATABASE_CONNECT_TIMEOUT_MS).toBe(5_000);
+    expect(env.DATABASE_QUERY_TIMEOUT_MS).toBeGreaterThan(env.DATABASE_STATEMENT_TIMEOUT_MS);
+  });
+
+  it.each([
+    ['equal to', '15000'],
+    ['below', '10000'],
+  ])('rejects a client query timeout %s the statement timeout', (_, queryTimeout) => {
+    expect(() =>
+      loadEnv({ DATABASE_STATEMENT_TIMEOUT_MS: '15000', DATABASE_QUERY_TIMEOUT_MS: queryTimeout }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('bounds every SQS call by default, above the long-poll wait', () => {
+    const env = loadEnv({});
+
+    expect(env.SQS_CONNECT_TIMEOUT_MS).toBe(3_000);
+    expect(env.SQS_REQUEST_TIMEOUT_MS).toBeGreaterThan(env.SQS_CONSUMER_WAIT_TIME_SECONDS * 1_000);
+  });
+
+  it('rejects an SQS request timeout that would cut a long poll short', () => {
+    expect(() =>
+      loadEnv({ SQS_CONSUMER_WAIT_TIME_SECONDS: '20', SQS_REQUEST_TIMEOUT_MS: '20000' }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
   it('parses fault injection points for test environments', () => {
     const env = loadEnv({
       NODE_ENV: 'test',

@@ -10,5 +10,13 @@ export function createSqsClient(env: Env): SQSClient {
       accessKeyId: env.AWS_ACCESS_KEY_ID,
       secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
     },
+    // The SDK applies no timeout by default, and `requestTimeout` alone only logs a warning: a
+    // call on a silent connection would never return. With these bounds it fails with
+    // ETIMEDOUT, and the consumer and the outbox publisher retry as for any transient failure.
+    requestHandler: {
+      connectionTimeout: env.SQS_CONNECT_TIMEOUT_MS,
+      requestTimeout: env.SQS_REQUEST_TIMEOUT_MS,
+      throwOnRequestTimeout: true,
+    },
   });
 }
