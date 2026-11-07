@@ -66,7 +66,7 @@ services:
         condition: service_healthy
     restart: 'no'
 
-  app:
+  app: &app
     build: .
     environment:
       <<: *app-env
@@ -95,6 +95,20 @@ services:
       timeout: 3s
       retries: 10
     stop_grace_period: 30s
+
+  # `docker compose --profile cluster up -d`: two more independent processes with every role,
+  # sharing only PostgreSQL and SQS with `app` (README §8: three or more instances).
+  app-2:
+    <<: *app
+    ports:
+      - '3001:3000'
+    profiles: [cluster]
+
+  app-3:
+    <<: *app
+    ports:
+      - '3002:3000'
+    profiles: [cluster]
 
 volumes:
   pgdata:
