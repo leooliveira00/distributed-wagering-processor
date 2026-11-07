@@ -339,8 +339,10 @@ O enunciado deixa explícito que **autenticação não vale pontos** e aceita n�
 - **OAuth 2.0 Client Credentials** num Identity Provider externo (Keycloak ou Cognito). O cliente é o **sistema do provedor**, não um usuário final, e não há tabela de usuários nem hash de senha no serviço.
 - Cada provedor é um _client_ com a claim `provider_id` (um mapper de atributo no Keycloak).
 - Um adaptador `JwksProviderIdentity` valida o JWT: assinatura pela JWKS do IdP (com cache), `iss`, `aud`, `exp` e `nbf`. Ele mapeia a claim para `providerId` e define `enforced = true`.
+- O adaptador aceita **só RS256**. Fixar o algoritmo protege contra tokens com `alg: none` e contra a troca de algoritmo (um token HS256 assinado com a chave pública).
+- **401 × 403:** token ausente, mal formado, expirado ou de outro emissor ou audience → **401**. Token válido de um provedor diferente do `providerId` do payload → **403** (a checagem que já existe no controller).
 - A troca não exige nenhuma mudança em controllers ou casos de uso.
-- Para o SQS, a autorização vem do IAM: só o provedor tem permissão de `SendMessage` na fila dele.
+- **Fila (SQS).** Conforme o §2, a fila é um canal interno confiável: a autenticação não cobre as mensagens, mas o `providerId` da mensagem passa pelas mesmas validações de domínio da API (provedor reservado, contexto da referência, escopo da idempotência). Em produção, só sistemas autorizados por IAM poderiam enviar mensagens para ela.
 
 ---
 
