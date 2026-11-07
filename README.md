@@ -94,6 +94,8 @@ Os testes de resiliência (`bun run test:resilience`, exigem `docker compose up 
 
 Um teste de ponta a ponta (README §13.7) envia pela fila, no mesmo grupo FIFO, **REFUND, ROLLBACK e uma cadeia ROLLBACK → WIN antes das transações que referenciam**, com 1 processo consumidor e **2 processos do worker de pendências**: todas as reversões ficam `PENDING_REFERENCE`, são resolvidas quando a referência chega e a órfã termina `REJECTED / REFERENCE_NOT_FOUND`. Outro teste mata o worker com SIGKILL depois de aplicar o crédito e antes do commit: nada da tentativa sobrevive e outra instância resolve a transação uma única vez.
 
+Os testes de observabilidade (`test/integration/observability`) sobem um **processo real** e leem o seu stdout: as linhas são JSON, carregam o contexto da requisição ou da mensagem, nunca repetem uma chave e nunca contêm valores monetários. O `/metrics` é conferido contra o tráfego gerado. Um teste provoca um lock timeout real e confere `db_lock_conflicts_total`, e a readiness é testada com fila inexistente, SQS inalcançável e PostgreSQL inalcançável.
+
 Os testes de integração do consumidor (`test/integration/sqs`) usam filas FIFO descartáveis com DLQ e redrive próprias e cobrem ack, redelivery, rejeição de negócio, conflito, DLQ imediata, retry com backoff, esgotamento de tentativas e SIGTERM.
 
 ## API
@@ -108,6 +110,8 @@ Os testes de integração do consumidor (`test/integration/sqs`) usam filas FIFO
 | `GET /wagering/transactions/:transactionId`                               | Transação pelo id interno                                                         |
 | `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | Transação pelo id do provedor                                                     |
 | `GET /health/live`                                                        | Liveness (sem autenticação)                                                       |
+| `GET /health/ready`                                                       | Readiness: PostgreSQL e SQS alcançáveis (`200` ou `503`, sem autenticação)        |
+| `GET /metrics`                                                            | Métricas no formato Prometheus (sem autenticação; restringir à rede interna)      |
 
 ```bash
 curl -X POST http://localhost:3000/wallets \
@@ -177,6 +181,36 @@ Uma transação cuja referência ainda não chegou (por exemplo, um REFUND antes
 - **Falha inesperada** numa tentativa (lock timeout, bug): a pendência é adiada pelo backoff sem contar tentativa, com log de erro e `pending_reference_failures_total`, para não bloquear as demais.
 
 Reenviar uma transação que estava pendente devolve o **estado atual** dela (por exemplo, `201` depois de resolvida), com `idempotentReplay: true`.
+
+## Observabilidade
+
+**Logs** em JSON (pino), uma linha por evento. Cada ponto de entrada abre um escopo de log e **toda** linha escrita dentro dele, em qualquer camada, carrega os campos do escopo: `correlationId`, `messageId` (SQS), `transactionId`, `walletId` e `providerId`.
+
+- HTTP: o header `X-Correlation-Id` é aceito quando bem formado (caso contrário, um novo id é gerado) e sempre devolvido na resposta.
+- SQS: o `correlationId` vem do atributo da mensagem ou, na falta dele, do `messageId`.
+- Worker de pendências: cada tentativa tem seu próprio `correlationId`.
+- **Os logs dizem qual transação ou wallet, nunca quanto:** valores e saldos não são registrados, e campos como `money`, `amount` e `balance` são mascarados como defesa adicional, assim como credenciais e corpos de requisição.
+
+**Métricas** em `GET /metrics` (formato Prometheus). Nenhum label carrega id de wallet, jogador ou transação, para evitar explosão de séries e exposição de dados do jogador.
+
+| Item do §12           | Métricas                                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Transações por status | `wager_transactions_total{kind, status, source}` (`source`: `submission` ou `pending-worker`)                                                    |
+| Duplicatas detectadas | `wager_idempotent_replays_total{entrypoint}`, `wager_idempotency_conflicts_total{entrypoint, code}`, `sqs_duplicate_messages_total`              |
+| Retries               | `sqs_message_retries_total{reason}`, `outbox_publish_failures_total`, `pending_reference_attempts_total{outcome}`                                |
+| Mensagens em DLQ      | `sqs_messages_dead_lettered_total{reason}` e `sqs_queue_messages{queue="dead_letter"}` (inclui o que a redrive policy moveu)                     |
+| Conflitos de lock     | `db_lock_conflicts_total{reason}` (`lock_timeout`, `deadlock`, `serialization`, `optimistic_version`) e `wallet_lock_wait_seconds{source}`       |
+| Outbox lag            | `outbox_pending_events`, `outbox_oldest_pending_age_seconds` e `outbox_publish_delay_seconds`                                                    |
+| Latência              | `wager_processing_duration_seconds{entrypoint, outcome}` e `http_request_duration_seconds{method, route, status}` (`route` é o template da rota) |
+
+Também são expostas as métricas padrão do processo (CPU, memória, lag do event loop). Os gauges de estado compartilhado são lidos no momento do scrape e só pela instância responsável: outbox lag no papel `outbox` e profundidade das filas no papel `consumer`. Uma leitura que falha não exporta valor antigo e é contada em `metrics_collection_failures_total`.
+
+**Health checks**, ambos sem autenticação:
+
+- `/health/live`: o processo está de pé. Não consulta dependências, para que uma queda do banco não reinicie todas as instâncias.
+- `/health/ready`: `select 1` no PostgreSQL e `GetQueueAttributes` na fila de apostas, em paralelo e com timeout de 2 s cada. Responde `200` ou `503` com `up`/`down` e a latência de cada dependência. Detalhes do erro vão apenas para o log.
+
+Em produção, `/metrics` deve ficar acessível apenas pela rede de monitoramento. OpenTelemetry e dashboard são opcionais no desafio e ficaram fora do escopo.
 
 ## Configuração
 
