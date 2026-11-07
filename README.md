@@ -70,24 +70,25 @@ bun run dev
 
 ## Comandos
 
-| Comando                                                  | Descrição                                       |
-| -------------------------------------------------------- | ----------------------------------------------- |
-| `bun run dev`                                            | Sobe a aplicação com hot reload                 |
-| `bun run start`                                          | Sobe a aplicação                                |
-| `bun run typecheck`                                      | Checagem de tipos (`tsc --noEmit`)              |
-| `bun run lint`                                           | ESLint (`strictTypeChecked`)                    |
-| `bun run format` / `format:check`                        | Prettier                                        |
-| `bun test`                                               | Todas as suítes                                 |
-| `bun run test:unit`                                      | Testes de unidade (sem infraestrutura)          |
-| `bun run test:integration`                               | Testes de integração (PostgreSQL real)          |
-| `bun run test:concurrency`                               | Paralelismo real, inclusive 3 processos         |
-| `bun run test:resilience`                                | Processos mortos, quedas de PostgreSQL e SQS    |
-| `bun run test:load`                                      | Teste de carga contra o cluster (3 instâncias)  |
-| `bun run migrate:up` / `migrate:down` / `migrate:status` | Migrations (reversíveis, uma por vez no `down`) |
-| `bun run sqs:bootstrap`                                  | Cria as filas no emulador                       |
-| `bun run demo:race`                                      | Duas BETs de 80.00 em paralelo sobre 100.00     |
-| `bun run demo:sqs`                                       | A mesma mensagem entregue 2× pela fila          |
-| `bun run demo:events`                                    | Lê (e consome) os eventos publicados            |
+| Comando                                                  | Descrição                                         |
+| -------------------------------------------------------- | ------------------------------------------------- |
+| `bun run dev`                                            | Sobe a aplicação com hot reload                   |
+| `bun run start`                                          | Sobe a aplicação                                  |
+| `bun run typecheck`                                      | Checagem de tipos (`tsc --noEmit`)                |
+| `bun run lint`                                           | ESLint (`strictTypeChecked`)                      |
+| `bun run format` / `format:check`                        | Prettier                                          |
+| `bun audit --production`                                 | Vulnerabilidades conhecidas nas deps. de produção |
+| `bun test`                                               | Todas as suítes                                   |
+| `bun run test:unit`                                      | Testes de unidade (sem infraestrutura)            |
+| `bun run test:integration`                               | Testes de integração (PostgreSQL real)            |
+| `bun run test:concurrency`                               | Paralelismo real, inclusive 3 processos           |
+| `bun run test:resilience`                                | Processos mortos, quedas de PostgreSQL e SQS      |
+| `bun run test:load`                                      | Teste de carga contra o cluster (3 instâncias)    |
+| `bun run migrate:up` / `migrate:down` / `migrate:status` | Migrations (reversíveis, uma por vez no `down`)   |
+| `bun run sqs:bootstrap`                                  | Cria as filas no emulador                         |
+| `bun run demo:race`                                      | Duas BETs de 80.00 em paralelo sobre 100.00       |
+| `bun run demo:sqs`                                       | A mesma mensagem entregue 2× pela fila            |
+| `bun run demo:events`                                    | Lê (e consome) os eventos publicados              |
 
 ## Testes
 

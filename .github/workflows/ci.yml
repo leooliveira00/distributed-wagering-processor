@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   checks:
-    name: Typecheck, lint, format and unit tests
+    name: Audit, typecheck, lint, format and unit tests
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -26,6 +26,12 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
+      # What ships in the image: no known vulnerability of any severity is accepted.
+      - name: Audit production dependencies
+        run: bun audit --production
+      # Tooling only (eslint, typescript...), never in the image: fail on high or critical.
+      - name: Audit development dependencies
+        run: bun audit --audit-level=high
       - run: bun run typecheck
       - run: bun run lint
       - run: bun run format:check
