@@ -2,7 +2,7 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) recebidas de múltiplos provedores de jogos, via HTTP e SQS, mantendo correção financeira sob entregas duplicadas, fora de ordem e concorrentes entre múltiplas instâncias.
 
-> 🚧 Em construção. As decisões técnicas estão (e continuarão sendo) documentadas em `ARCHITECTURE.md`.
+Decisões, garantias, trade-offs e limitações estão em [`ARCHITECTURE.md`](ARCHITECTURE.md). Este README cobre setup, comandos, testes, API e uma [demo guiada](#demo-guiada).
 
 ## Stack
 
@@ -48,6 +48,14 @@ Filas criadas:
 - `wager-transactions-dlq.fifo`: dead-letter queue
 - `wagering-events.fifo`: eventos de integração publicados pela outbox
 
+### Múltiplas instâncias
+
+```bash
+docker compose --profile cluster up -d --build --wait
+```
+
+Sobe mais dois processos independentes, `app-2` (porta `3001`) e `app-3` (porta `3002`). Cada um roda todos os papéis, e os três compartilham apenas o PostgreSQL e o SQS. Qualquer instância pode receber qualquer requisição ou mensagem, e a consistência vem do banco, não de afinidade. Para derrubar uma instância e ver as outras continuarem: `docker kill wagering-app-2-1`. Para trazê-la de volta, repita o comando acima.
+
 ## Desenvolvimento local (fora do container)
 
 ```bash
@@ -74,6 +82,9 @@ bun run dev
 | `bun run test:resilience`                                | Processos mortos, quedas de PostgreSQL e SQS    |
 | `bun run migrate:up` / `migrate:down` / `migrate:status` | Migrations (reversíveis, uma por vez no `down`) |
 | `bun run sqs:bootstrap`                                  | Cria as filas no emulador                       |
+| `bun run demo:race`                                      | Duas BETs de 80.00 em paralelo sobre 100.00     |
+| `bun run demo:sqs`                                       | A mesma mensagem entregue 2× pela fila          |
+| `bun run demo:events`                                    | Lê (e consome) os eventos publicados            |
 
 ## Testes
 
@@ -243,6 +254,82 @@ Também são expostas as métricas padrão do processo (CPU, memória, lag do ev
 - `/health/ready`: `select 1` no PostgreSQL e `GetQueueAttributes` na fila de apostas, em paralelo e com timeout de 2 s cada. Responde `200` ou `503` com `up`/`down` e a latência de cada dependência. Detalhes do erro vão apenas para o log.
 
 Em produção, `/metrics` deve ficar acessível apenas pela rede de monitoramento. OpenTelemetry e dashboard são opcionais no desafio e ficaram fora do escopo.
+
+## Demo guiada
+
+Um roteiro de cerca de 10 minutos que mostra as garantias principais com três instâncias. Use bash (no Windows, o Git Bash); só `curl` e `sed` são necessários. Antes, rode `bun install` uma vez para os scripts `demo:*`.
+
+**1. Três instâncias no ar**
+
+```bash
+docker compose --profile cluster up -d --build --wait
+for p in 3000 3001 3002; do curl -s localhost:$p/health/ready; echo; done
+```
+
+**2. Wallet com saldo inicial: OPENING no ledger** (lido por outra instância)
+
+```bash
+PLAYER=$(bun -e 'console.log(crypto.randomUUID())')
+WALLET=$(curl -s -X POST localhost:3000/wallets -H 'content-type: application/json' \
+  -d "{\"playerId\":\"$PLAYER\",\"initialBalance\":{\"amount\":\"100.00\",\"currency\":\"BRL\"}}" \
+  | sed -E 's/.*"id":"([^"]+)".*/\1/')
+curl -s localhost:3001/wallets/$WALLET/ledger; echo
+```
+
+**3. Idempotência entre instâncias.** Uma função auxiliar envia uma operação para a instância da porta informada:
+
+```bash
+bet() {
+  curl -s -w '  -> HTTP %{http_code}\n' -X POST "localhost:$1/wagering/transactions" \
+    -H 'content-type: application/json' -H "Idempotency-Key: provider-a:$2" \
+    -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"$2\",\"playerId\":\"$PLAYER\",\"walletId\":\"$WALLET\",\"roundId\":\"round-1\",\"gameId\":\"fortune-chimp\",\"kind\":\"$3\",\"money\":{\"amount\":\"$4\",\"currency\":\"BRL\"}$5}"
+}
+bet 3000 tx-1 BET 25.00   # 201 PROCESSED, saldo 75.00
+bet 3001 tx-1 BET 25.00   # 201, idempotentReplay: true, mesmo saldo (outra instância)
+bet 3002 tx-1 BET 30.00   # 409 IDEMPOTENCY_KEY_CONFLICT (mesma key, outro payload)
+```
+
+**4. Referência fora de ordem:** o ROLLBACK chega antes da BET.
+
+```bash
+bet 3000 rb-2 ROLLBACK 10.00 ',"referenceExternalTransactionId":"tx-2"'   # 202 PENDING_REFERENCE
+bet 3001 tx-2 BET 10.00                                                     # 201
+sleep 1
+curl -s localhost:3002/providers/provider-a/wagering/transactions/rb-2; echo   # status PROCESSED
+```
+
+**5. Corrida pelo saldo entre instâncias:** duas BETs de 80.00 sobre 100.00 ao mesmo tempo. Uma é processada, a outra é rejeitada com `INSUFFICIENT_FUNDS`, e o saldo termina em 20.00.
+
+```bash
+DEMO_API_URLS=http://localhost:3000,http://localhost:3001 bun run demo:race
+```
+
+**6. Entrada pela fila, com entrega duplicada:** a mesma mensagem é entregue duas vezes e o inbox garante um único débito.
+
+```bash
+bun run demo:sqs
+```
+
+**7. Uma instância morre e as outras continuam**
+
+```bash
+docker kill wagering-app-2-1
+curl -s localhost:3000/health/ready; echo
+bun run demo:sqs                              # consumido pelas instâncias vivas
+docker compose --profile cluster up -d --wait # app-2 volta
+```
+
+Uma mensagem que já tinha sido entregue à instância morta só volta a ficar visível depois do visibility timeout da fila (30 s). O `demo:sqs` avisa enquanto espera. É a entrega at-least-once funcionando, sem perda.
+
+**8. Consistência, métricas e eventos**
+
+```bash
+curl -s -X POST localhost:3000/wallets/$WALLET/reconciliation; echo   # consistent: true
+curl -s localhost:3000/metrics | grep -E '^wager_(transactions|idempotent_replays|idempotency_conflicts)_total'
+bun run demo:events                                                    # eventos publicados pela outbox
+```
+
+Cada instância expõe só os próprios contadores em `/metrics`. Por exemplo, o conflito do passo 3 aparece na porta `3002`. Num ambiente com Prometheus, as séries das instâncias são somadas na consulta.
 
 ## Configuração
 
