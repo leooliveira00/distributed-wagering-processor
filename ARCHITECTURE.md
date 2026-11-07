@@ -236,7 +236,7 @@ No `SIGTERM`, o consumidor para de receber, conclui as mensagens em andamento at
 O evento é gravado na **mesma transação** que a wallet, a transação e o ledger: ou tudo é confirmado junto, ou nada é. Nenhum evento é publicado antes do commit. O publisher (papel `outbox`) funciona assim:
 
 1. **Reserva um lote por lease** (D9), numa transação curta: `UPDATE outbox_messages SET locked_until = now() + lease WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING ...`. Publishers concorrentes pulam as linhas reservadas por outro, sem esperar.
-2. **Publica** fora da transação, em ordem de ocorrência, com `MessageGroupId = walletId` e `MessageDeduplicationId = eventId`.
+2. **Publica** fora da transação, em ordem de ocorrência dentro do lote, com `MessageGroupId = walletId` e `MessageDeduplicationId = eventId`. Entre lotes de publishers diferentes, a ordem não é garantida (D10).
 3. **Marca** os publicados. As falhas recebem backoff exponencial, **sem limite de tentativas**: um evento confirmado nunca é descartado.
 
 Todas as janelas de crash são seguras:
@@ -264,17 +264,17 @@ O enunciado pede que os eventos sejam publicados, mas não define o destino. Ele
 
 Todos os endpoints usam o mesmo mapeamento (`toHttpError`) e o mesmo envelope de erro, `{ "error": { "code", "message", "retryable" } }`. O provedor decide **pelo status e pelo `code`**, sem interpretar mensagens:
 
-| Situação                                                        | Status      | `code` (exemplos)                                                                       | Reenviar?                                 |
-| --------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------- | ----------------------------------------- |
-| Processada                                                      | `201`       | —                                                                                       | — (reenvio = replay)                      |
-| Aceita, aguardando a referência                                 | `202`       | —                                                                                       | — (consultar depois)                      |
-| Contrato inválido                                               | `400`       | `INVALID_PAYLOAD`, `INVALID_IDEMPOTENCY_KEY`, `RESERVED_PROVIDER`, `REFERENCE_REQUIRED` | não: corrigir o payload                   |
-| Token ausente ou inválido (quando a autenticação estiver ativa) | `401`/`403` | `UNAUTHORIZED`, `FORBIDDEN`                                                             | não                                       |
-| Wallet ou transação inexistente                                 | `404`       | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`                                             | não                                       |
-| Conflito de idempotência / estado                               | `409`       | `IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_TRANSACTION_CONFLICT`, `WALLET_ALREADY_EXISTS`    | não                                       |
-| Rejeitada por regra de negócio                                  | `422`       | o `failureCode` (tabela abaixo)                                                         | não: a transação fica gravada e auditável |
-| Falha transitória de infraestrutura                             | `503`       | `SERVICE_UNAVAILABLE` (com `Retry-After`)                                               | **sim**, com a mesma key                  |
-| Erro inesperado ou violação de integridade                      | `500`       | `INTERNAL_ERROR`, `INTEGRITY_VIOLATION`                                                 | não (é um bug)                            |
+| Situação                                                        | Status      | `code` (exemplos)                                                                                         | Reenviar?                                 |
+| --------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Processada                                                      | `201`       | —                                                                                                         | — (reenvio = replay)                      |
+| Aceita, aguardando a referência                                 | `202`       | —                                                                                                         | — (consultar depois)                      |
+| Contrato inválido                                               | `400`       | `INVALID_PAYLOAD`, `INVALID_IDEMPOTENCY_KEY`, `RESERVED_PROVIDER`, `REFERENCE_REQUIRED`, `SELF_REFERENCE` | não: corrigir o payload                   |
+| Token ausente ou inválido (quando a autenticação estiver ativa) | `401`/`403` | `UNAUTHORIZED`, `FORBIDDEN`                                                                               | não                                       |
+| Wallet ou transação inexistente                                 | `404`       | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`                                                               | não                                       |
+| Conflito de idempotência / estado                               | `409`       | `IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_TRANSACTION_CONFLICT`, `WALLET_ALREADY_EXISTS`                      | não                                       |
+| Rejeitada por regra de negócio                                  | `422`       | o `failureCode` (tabela abaixo)                                                                           | não: a transação fica gravada e auditável |
+| Falha transitória de infraestrutura                             | `503`       | `SERVICE_UNAVAILABLE` (com `Retry-After`)                                                                 | **sim**, com a mesma key                  |
+| Erro inesperado ou violação de integridade                      | `500`       | `INTERNAL_ERROR`, `INTEGRITY_VIOLATION`                                                                   | não (é um bug)                            |
 
 A resposta `422` traz o envelope de erro **e** os dados da transação rejeitada. Um replay devolve o mesmo status da primeira resposta.
 
@@ -364,9 +364,9 @@ Cada decisão é apresentada no formato **decisão → por quê → alternativas
 
 **D8. Status HTTP:** a tabela da [seção 7](#7-contratos-status-http-e-failurecode). Em especial, `422` para rejeição de negócio (gravada) e `202` para pendente.
 
-**D9. Outbox com múltiplos publishers:** lease com `SKIP LOCKED`. → _Alternativas:_ advisory lock (um único publisher ativo por vez, sem paralelismo) e `FOR UPDATE` mantido durante a publicação (transação longa com chamada de rede dentro). → _Consequência:_ paralelismo entre publishers; um crash custa no máximo um atraso do tamanho do lease.
+**D9. Outbox com múltiplos publishers:** lease com `SKIP LOCKED`. → _Alternativas:_ advisory lock (um único publisher ativo por vez, sem paralelismo) e `FOR UPDATE` mantido durante a publicação (transação longa com chamada de rede dentro). → _Consequência:_ paralelismo entre publishers; um crash custa no máximo um atraso do tamanho do lease. O preço desse paralelismo é que a ordem entre publishers não é garantida (veja D10). Um publisher único garantiria a ordem, mas sem escala horizontal.
 
-**D10. Destino dos eventos:** `wagering-events.fifo`, com `MessageGroupId = walletId` (o id do agregado quando não há wallet) e `MessageDeduplicationId = eventId`. A ordem fica garantida por wallet, que é a unidade de concorrência.
+**D10. Destino dos eventos:** `wagering-events.fifo`, com `MessageGroupId = walletId` (o id do agregado quando não há wallet) e `MessageDeduplicationId = eventId`. O `MessageGroupId` preserva a ordem dos eventos de uma wallet **publicados pelo mesmo publisher**. Com vários publishers, dois eventos da mesma wallet podem ser reservados em lotes diferentes e chegar fora de ordem. A ordenação do broker é otimização (§8): o consumidor deduplica por `eventId` e ordena por `walletVersion` (presente em `WalletBalanceChanged`, uma sequência estrita por wallet) ou por `occurredAt`.
 
 **D11. Retry de `PENDING_REFERENCE`:** backoff exponencial de 1 s a 60 s, 10 tentativas (≈ 243 s), configurável. Ao esgotar, `REFERENCE_NOT_FOUND` ou `REFERENCE_NOT_PROCESSED`. O campo `attempts` termina igual ao limite.
 
@@ -404,6 +404,12 @@ O §7 pede que interpretações adicionais sejam documentadas. Em todas elas, a 
 - **`LOSS`** é aplicada (`PROCESSED`, com `WagerTransactionProcessed`), mas não gera lançamento nem `WalletBalanceChanged`, porque o saldo não muda.
 - **Reconciliação detecta, não corrige.** Corrigir automaticamente esconderia a causa da divergência. Uma divergência gera log de alerta e métrica.
 - **Saldo observado nos replays** (regra 7.7): o saldo de _quando a operação foi aplicada_, não o atual. Ele fica na coluna `observed_balance`.
+- **Autorreferência.** Uma transação cujo `referenceExternalTransactionId` é o próprio `externalTransactionId` é recusada na entrada (`400 SELF_REFERENCE`), e nada é gravado. No banco, `CHECK (reference_transaction_id <> id)` reforça a regra.
+- **Assinaturas adaptadas** (o §6 permite, desde que as garantias sejam preservadas):
+  - `markProcessed`, `reject` e `markPendingReference` recebem um objeto com o `observedBalance`, que é o saldo devolvido nos replays (regra 7.7). `markPendingReference` recebe também o `nextAttemptAt`.
+  - `WagerTransaction` ganhou `observedBalance`, `attempts` e `nextAttemptAt`, necessários para o replay e para o retry de referências (D11).
+  - `Wallet.open` devolve a wallet **e** o lançamento OPENING, para que saldo inicial e ledger nasçam juntos. A transação OPENING é criada por uma factory interna, `WagerTransaction.createOpening`.
+  - `fail(code)` mantém a assinatura do enunciado, mas nenhum fluxo a usa hoje (veja as [limitações](#12-trade-offs-e-limitações)).
 
 ---
 
@@ -412,7 +418,7 @@ O §7 pede que interpretações adicionais sejam documentadas. Em todas elas, a 
 **Trade-offs aceitos**
 
 - **A hot wallet é serializada.** É o preço do lock pessimista: a vazão de uma única wallet é limitada pelo tempo de cada transação. Wallets diferentes não disputam entre si.
-- **Eventos chegam pelo menos uma vez**, com ordem garantida só por wallet. Os consumidores precisam ser idempotentes pelo `eventId`.
+- **Eventos chegam pelo menos uma vez** e, com vários publishers, podem chegar fora de ordem mesmo dentro de uma wallet. Os consumidores deduplicam pelo `eventId` e ordenam por `walletVersion` ou `occurredAt`.
 - **O processo não fica preso, mas a falha não é imediata.** Durante uma partição de rede, uma requisição pode levar até cerca de 20 s (o `DATABASE_QUERY_TIMEOUT_MS`) para falhar.
 - **`discardSilentConnections` ajusta um comportamento do driver `pg`.** Ele depende da mensagem `Query read timeout` do `pg` 8.x, que um teste unitário fixa, e precisa ser revisto num upgrade do driver.
 - **Uma queda do SQS mais longa que o orçamento de tentativas** (`SQS_MAX_RECEIVE_COUNT` × backoff) leva mensagens à DLQ, mesmo sendo uma falha temporária. A recuperação é o redrive da DLQ. A outbox, ao contrário, tenta indefinidamente.
