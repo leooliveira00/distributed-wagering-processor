@@ -80,7 +80,7 @@ bun run dev
 | `bun audit --production`                                 | Vulnerabilidades conhecidas nas deps. de produção |
 | `bun test`                                               | Todas as suítes                                   |
 | `bun run test:unit`                                      | Testes de unidade (sem infraestrutura)            |
-| `bun run test:integration`                               | Testes de integração (PostgreSQL real)            |
+| `bun run test:integration`                               | Testes de integração (PostgreSQL e SQS reais)     |
 | `bun run test:concurrency`                               | Paralelismo real, inclusive 3 processos           |
 | `bun run test:resilience`                                | Processos mortos, quedas de PostgreSQL e SQS      |
 | `bun run test:load`                                      | Teste de carga contra o cluster (3 instâncias)    |
@@ -92,11 +92,12 @@ bun run dev
 
 ## Testes
 
-Os testes de integração rodam contra o PostgreSQL do compose, sem mocks:
+Os testes de integração, concorrência e resiliência rodam contra o PostgreSQL **e** o emulador de SQS do compose, sem mocks. Os dois precisam estar no ar:
 
 ```bash
-docker compose up -d postgres
-bun run test:integration
+docker compose up -d postgres sqs
+bun test                    # todas as suítes
+bun run test:integration    # ou uma suíte específica
 ```
 
 Cada suíte cria e migra um banco descartável próprio (`wagering_test_<suite>`), então os testes não dependem de limpeza nem interferem nos dados de desenvolvimento.

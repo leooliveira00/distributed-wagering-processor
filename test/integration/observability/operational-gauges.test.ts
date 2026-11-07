@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { SubmitWagerTransaction } from '../../../src/application/wagering/submit-wager-transaction';
 import { CreateWallet } from '../../../src/application/wallets/create-wallet';
 import { WagerTransactionKind } from '../../../src/domain/wagering/wager-transaction-kind';
+import { type Clock } from '../../../src/application/ports/system';
 import { type AppRole, type Env } from '../../../src/infrastructure/config/env';
 import { createSqsClient } from '../../../src/infrastructure/messaging/sqs/sqs-client';
 import { OperationalGauges } from '../../../src/infrastructure/observability/operational-gauges';
@@ -39,6 +40,7 @@ async function scrape(
   roles: AppRole[],
   overrides: Partial<Env> = {},
   times = 1,
+  clock: Clock = new SystemClock(),
 ): Promise<{ text: string; logger: RecordingLogger }> {
   const env: Env = {
     ...db.env,
@@ -50,7 +52,7 @@ async function scrape(
   const metrics = new PrometheusMetrics();
   const logger = new RecordingLogger();
   const sqs = createSqsClient(env);
-  new OperationalGauges(metrics, db.orm, sqs, env, logger).onModuleInit();
+  new OperationalGauges(metrics, db.orm, sqs, env, logger, clock).onModuleInit();
   let text = '';
   for (let scrapeIndex = 0; scrapeIndex < times; scrapeIndex++) {
     text = await metrics.registry.metrics();
@@ -103,6 +105,16 @@ describe('outbox lag gauges (role outbox)', () => {
     expect(sampleValue(text, 'outbox_pending_events')).toBe(await unpublishedEvents());
     expect(sampleValue(text, 'outbox_pending_events')).toBeGreaterThanOrEqual(2);
     expect(sampleValue(text, 'outbox_oldest_pending_age_seconds')).toBeGreaterThanOrEqual(1);
+
+    // Exact, whatever the skew between this machine and the database: the age comes from the
+    // application clock, the same one that wrote occurred_at.
+    const [oldest] = await db.sql.unsafe<{ at: Date }[]>(
+      'select min(occurred_at) as at from outbox_messages where published_at is null',
+    );
+    if (!oldest) throw new Error('no pending event');
+    const fortyTwoSecondsLater: Clock = { now: () => new Date(oldest.at.getTime() + 42_000) };
+    const fixed = (await scrape(['outbox'], {}, 1, fortyTwoSecondsLater)).text;
+    expect(sampleValue(fixed, 'outbox_oldest_pending_age_seconds')).toBeCloseTo(42, 3);
 
     await db.sql.unsafe(
       'update outbox_messages set published_at = now() where published_at is null',

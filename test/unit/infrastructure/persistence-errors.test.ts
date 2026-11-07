@@ -45,6 +45,16 @@ describe('translatePersistenceError', () => {
     ['a raw serialization failure', pgError('40001'), 'serialization'],
     ['a statement timeout', pgError('57014'), 'statement_timeout'],
     ['a refused connection', pgError('ECONNREFUSED'), 'connection'],
+    ['a host name that does not resolve', pgError('ENOTFOUND'), 'connection'],
+    ['a resolver failing temporarily', pgError('EAI_AGAIN'), 'connection'],
+    ['an unreachable host', pgError('EHOSTUNREACH'), 'connection'],
+    ['an unreachable network', pgError('ENETUNREACH'), 'connection'],
+    ['an aborted connection', pgError('ECONNABORTED'), 'connection'],
+    [
+      'a network code hidden one level down by a wrapper',
+      new Error('driver failed', { cause: pgError('ENOTFOUND') }),
+      'connection',
+    ],
     // pg / pg-pool raise these with no code at all: the exact driver wording is pinned here.
     ['a query that got no answer', new Error('Query read timeout'), 'connection'],
     [

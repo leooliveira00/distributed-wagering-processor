@@ -32,7 +32,25 @@ const TRANSIENT_SQLSTATES = new Map<string, TransientReason>([
   ['08006', 'connection'], // connection_failure
 ]);
 const INTEGRITY_SQLSTATES = new Set(['23514', '23001', '23503', '23502']);
-const TRANSIENT_NODE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE']);
+/**
+ * Socket and resolver codes meaning "the database cannot be reached right now". DNS failures are
+ * here on purpose: inside a compose network a stopped `postgres` container stops resolving, so an
+ * outage often shows up as ENOTFOUND rather than ECONNREFUSED. The list stays explicit: unknown
+ * errors are never retried blindly.
+ */
+const TRANSIENT_NODE_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ENOTFOUND', // the host name does not resolve
+  'EAI_AGAIN', // the resolver itself is temporarily failing
+  'EHOSTUNREACH',
+  'EHOSTDOWN',
+  'ENETUNREACH',
+  'ENETDOWN',
+]);
 /**
  * Failures `pg` and `pg-pool` raise without any code, only a fixed message: client timeouts and a
  * connection lost mid-query. Pinned by unit tests, since a driver upgrade could reword them.
@@ -44,6 +62,19 @@ const CODELESS_CONNECTION_FAILURES = [
   'Connection terminated unexpectedly',
   'Client has encountered a connection error and is not queryable',
 ];
+
+/**
+ * True when the error, or any error in its `cause` chain, carries a network code: a wrapper of the
+ * driver may hide the original socket error one level down.
+ */
+function hasTransientNodeCode(error: unknown): boolean {
+  for (let current = error, depth = 0; current !== undefined && depth < 5; depth++) {
+    const code = shapeOf(current).code;
+    if (typeof code === 'string' && TRANSIENT_NODE_CODES.has(code)) return true;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
 
 /** True when the error, or any error in its `cause` chain, is a codeless connection failure. */
 function isCodelessConnectionFailure(error: unknown): boolean {
@@ -103,10 +134,7 @@ export function translatePersistenceError(error: unknown): unknown {
       reason: sqlReason,
     });
   }
-  if (
-    (sqlState !== undefined && TRANSIENT_NODE_CODES.has(sqlState)) ||
-    isCodelessConnectionFailure(error)
-  ) {
+  if (hasTransientNodeCode(error) || isCodelessConnectionFailure(error)) {
     return new TransientError('Database unreachable, retry later', {
       cause: error,
       reason: 'connection',

@@ -3,6 +3,7 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
 import { Counter, Gauge } from 'prom-client';
 import { APP_LOGGER, type AppLogger } from '../../application/ports/logger';
+import { type Clock, CLOCK } from '../../application/ports/system';
 import { ENV } from '../config/config.module';
 import { type Env } from '../config/env';
 import { SQS_CLIENT } from '../messaging/messaging.module';
@@ -58,6 +59,7 @@ export class OperationalGauges implements OnModuleInit {
     @Inject(SQS_CLIENT) private readonly sqs: SQSClient,
     @Inject(ENV) private readonly env: Env,
     @Inject(APP_LOGGER) private readonly logger: AppLogger,
+    @Inject(CLOCK) private readonly clock: Clock,
   ) {
     this.failures = new Counter({
       name: 'metrics_collection_failures_total',
@@ -142,19 +144,26 @@ export class OperationalGauges implements OnModuleInit {
     });
   }
 
-  /** Served by outbox_messages_unpublished_idx (occurred_at, partial on published_at is null). */
+  /**
+   * Served by outbox_messages_unpublished_idx (occurred_at, partial on published_at is null).
+   * The age is measured with the APPLICATION clock, the one that wrote `occurred_at`: subtracting
+   * it from the database's now() would mix two clocks, and any skew between them (hundreds of ms
+   * between a laptop and its Docker VM) would show up as lag.
+   */
   private async readOutbox(): Promise<OutboxSample> {
     const [row] = await this.orm.em
       .fork()
-      .execute<{ pending: number; oldest_age_seconds: number }[]>(
+      .execute<{ pending: number; oldest_epoch_seconds: number | null }[]>(
         `select count(*)::int as pending,
-                coalesce(extract(epoch from now() - min(occurred_at)), 0)::float8 as oldest_age_seconds
+                extract(epoch from min(occurred_at))::float8 as oldest_epoch_seconds
            from outbox_messages
           where published_at is null`,
       );
+    const oldest = row?.oldest_epoch_seconds ?? null;
     return {
       pending: row?.pending ?? 0,
-      oldestAgeSeconds: Math.max(0, row?.oldest_age_seconds ?? 0),
+      oldestAgeSeconds:
+        oldest === null ? 0 : Math.max(0, this.clock.now().getTime() / 1000 - oldest),
     };
   }
 
