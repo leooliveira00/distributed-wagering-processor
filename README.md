@@ -80,6 +80,7 @@ bun run dev
 | `bun run test:integration`                               | Testes de integração (PostgreSQL real)          |
 | `bun run test:concurrency`                               | Paralelismo real, inclusive 3 processos         |
 | `bun run test:resilience`                                | Processos mortos, quedas de PostgreSQL e SQS    |
+| `bun run test:load`                                      | Teste de carga contra o cluster (3 instâncias)  |
 | `bun run migrate:up` / `migrate:down` / `migrate:status` | Migrations (reversíveis, uma por vez no `down`) |
 | `bun run sqs:bootstrap`                                  | Cria as filas no emulador                       |
 | `bun run demo:race`                                      | Duas BETs de 80.00 em paralelo sobre 100.00     |
@@ -125,6 +126,8 @@ Os testes de resiliência também cobrem o README §3 (_"PostgreSQL e SQS podem 
 Nesses dois últimos testes, o saldo final de cada wallet é **calculado de antemão**, então qualquer efeito perdido ou duplicado aparece como saldo errado. Os testes também conferem que nada foi para a DLQ, que todo evento confirmado foi entregue e que a reconciliação de todas as wallets dá `consistent: true`.
 
 Os sorteios desses testes (o momento do kill, o processo morto e a ordem das operações) vêm de uma seed impressa na saída. Para repetir uma execução, use `RESILIENCE_SEED=<seed> bun run test:resilience`.
+
+O **teste de carga** (`bun run test:load`, com o cluster no ar: `docker compose --profile cluster up -d --build --wait`) mede 4 cenários: wallets distribuídas, hot wallet, reenvios e fila. Ele registra throughput, latência p50/p95/p99, taxa de erro, conflitos de lock e atraso da outbox, e termina reconciliando todas as wallets usadas. Ambiente, metodologia, resultados e análise estão em [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md).
 
 Os testes de observabilidade (`test/integration/observability`) sobem um **processo real** e leem o seu stdout: as linhas são JSON, carregam o contexto da requisição ou da mensagem, nunca repetem uma chave e nunca contêm valores monetários. O `/metrics` é conferido contra o tráfego gerado. Um teste provoca um lock timeout real e confere `db_lock_conflicts_total`, e a readiness é testada com fila inexistente, SQS inalcançável e PostgreSQL inalcançável.
 

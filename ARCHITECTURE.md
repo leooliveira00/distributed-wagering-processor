@@ -236,7 +236,7 @@ No `SIGTERM`, o consumidor para de receber, conclui as mensagens em andamento at
 O evento é gravado na **mesma transação** que a wallet, a transação e o ledger: ou tudo é confirmado junto, ou nada é. Nenhum evento é publicado antes do commit. O publisher (papel `outbox`) funciona assim:
 
 1. **Reserva um lote por lease** (D9), numa transação curta: `UPDATE outbox_messages SET locked_until = now() + lease WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING ...`. Publishers concorrentes pulam as linhas reservadas por outro, sem esperar.
-2. **Publica** fora da transação, em ordem de ocorrência dentro do lote, com `MessageGroupId = walletId` e `MessageDeduplicationId = eventId`. Entre lotes de publishers diferentes, a ordem não é garantida (D10).
+2. **Publica** fora da transação, em ordem de ocorrência dentro do lote e em chamadas `SendMessageBatch` de até 10 eventos (uma ida e volta por bloco, não por evento), com `MessageGroupId = walletId` e `MessageDeduplicationId = eventId`. Entre lotes de publishers diferentes, a ordem não é garantida (D10).
 3. **Marca** os publicados. As falhas recebem backoff exponencial, **sem limite de tentativas**: um evento confirmado nunca é descartado.
 
 Todas as janelas de crash são seguras:
@@ -422,6 +422,7 @@ O §7 pede que interpretações adicionais sejam documentadas. Em todas elas, a 
 - **O processo não fica preso, mas a falha não é imediata.** Durante uma partição de rede, uma requisição pode levar até cerca de 20 s (o `DATABASE_QUERY_TIMEOUT_MS`) para falhar.
 - **`discardSilentConnections` ajusta um comportamento do driver `pg`.** Ele depende da mensagem `Query read timeout` do `pg` 8.x, que um teste unitário fixa, e precisa ser revisto num upgrade do driver.
 - **Uma queda do SQS mais longa que o orçamento de tentativas** (`SQS_MAX_RECEIVE_COUNT` × backoff) leva mensagens à DLQ, mesmo sendo uma falha temporária. A recuperação é o redrive da DLQ. A outbox, ao contrário, tenta indefinidamente.
+- **Vazão da outbox no ambiente local.** No teste de carga, a publicação ficou limitada a cerca de 100 eventos/s pelo emulador de SQS, que trava em um núcleo. Sob carga contínua, o atraso da outbox chegou a dezenas de segundos, sem perda: tudo foi drenado depois. A análise completa está em [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md).
 - **Os gauges** (atraso da outbox e profundidade das filas) são lidos no momento do scrape e só pelo papel responsável. Eles são um retrato, não um histórico.
 
 **Limitações conhecidas**

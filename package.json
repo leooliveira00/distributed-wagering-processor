@@ -19,6 +19,7 @@
     "test:integration": "bun test test/integration",
     "test:concurrency": "bun test test/concurrency",
     "test:resilience": "bun test test/resilience",
+    "test:load": "bun test/load/run.ts",
     "migrate:up": "bun scripts/migrate.ts up",
     "migrate:down": "bun scripts/migrate.ts down",
     "migrate:status": "bun scripts/migrate.ts status",
