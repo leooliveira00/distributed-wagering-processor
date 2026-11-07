@@ -71,7 +71,7 @@ bun run dev
 | `bun run test:unit`                                      | Testes de unidade (sem infraestrutura)          |
 | `bun run test:integration`                               | Testes de integração (PostgreSQL real)          |
 | `bun run test:concurrency`                               | Paralelismo real, inclusive 3 processos         |
-| `bun run test:resilience`                                | Processos reais mortos (SIGKILL) e recuperação  |
+| `bun run test:resilience`                                | Processos mortos, quedas de PostgreSQL e SQS    |
 | `bun run migrate:up` / `migrate:down` / `migrate:status` | Migrations (reversíveis, uma por vez no `down`) |
 | `bun run sqs:bootstrap`                                  | Cria as filas no emulador                       |
 
@@ -93,6 +93,27 @@ Um teste adicional coloca **2 processos consumidores e 1 processo de API** sobre
 Os testes de resiliência (`bun run test:resilience`, exigem `docker compose up -d postgres sqs`) sobem processos reais da aplicação com `FAULT_INJECTION` e os matam com SIGKILL em pontos exatos: logo após reservar eventos da outbox, logo após publicar sem marcar e **logo após o commit de uma mensagem consumida, antes do ack**. Outra instância assume; o inbox e a deduplicação por `eventId` garantem um único efeito. `FAULT_INJECTION` é recusado quando `NODE_ENV=production`.
 
 Um teste de ponta a ponta (README §13.7) envia pela fila, no mesmo grupo FIFO, **REFUND, ROLLBACK e uma cadeia ROLLBACK → WIN antes das transações que referenciam**, com 1 processo consumidor e **2 processos do worker de pendências**: todas as reversões ficam `PENDING_REFERENCE`, são resolvidas quando a referência chega e a órfã termina `REJECTED / REFERENCE_NOT_FOUND`. Outro teste mata o worker com SIGKILL depois de aplicar o crédito e antes do commit: nada da tentativa sobrevive e outra instância resolve a transação uma única vez.
+
+Os testes de resiliência também cobrem o README §3 (_"PostgreSQL e SQS podem ficar temporariamente indisponíveis"_) e o §13.8 (reinício do serviço). Todos rodam com processos reais e infraestrutura real:
+
+- **Queda do PostgreSQL ou do SQS** (`database-outage`, `sqs-outage`): um proxy TCP controlado pelo teste fica entre a aplicação e a dependência e simula dois tipos de queda:
+  - **conexões recusadas**, como num banco ou broker reiniciando;
+  - **partição de rede**, em que as conexões abertas ficam mudas para sempre, mesmo depois que a rede volta.
+
+  Durante a queda do banco, a API responde `503` com `Retry-After` em poucos segundos, sem travar. Durante a queda do SQS, a API continua respondendo normalmente, porque o SQS não está no caminho síncrono. Nos dois casos, as mensagens não recebem ack, os eventos esperam na outbox e o processo não morre. Depois que a dependência volta, a aplicação se recupera sozinha, e cada operação é aplicada exatamente uma vez.
+
+- **Instância morta sob carga** (`instance-killed-under-load`): 3 processos com todos os papéis recebem carga mista em 4 wallets:
+  - BETs e WINs por HTTP;
+  - BETs pela fila, cada mensagem entregue duas vezes;
+  - ROLLBACKs que chegam antes das BETs que estornam.
+
+  Um dos processos leva SIGKILL num ponto arbitrário da carga, sem injeção de falha. O cliente reenvia as requisições que falharam para os sobreviventes, com a mesma idempotency key.
+
+- **Reinício completo** (`full-restart`): os 3 processos levam SIGKILL ao mesmo tempo, no meio da mesma carga. Ficam para trás mensagens na fila, eventos não publicados e pendências. Um conjunto novo de processos termina todo esse trabalho.
+
+Nesses dois últimos testes, o saldo final de cada wallet é **calculado de antemão**, então qualquer efeito perdido ou duplicado aparece como saldo errado. Os testes também conferem que nada foi para a DLQ, que todo evento confirmado foi entregue e que a reconciliação de todas as wallets dá `consistent: true`.
+
+Os sorteios desses testes (o momento do kill, o processo morto e a ordem das operações) vêm de uma seed impressa na saída. Para repetir uma execução, use `RESILIENCE_SEED=<seed> bun run test:resilience`.
 
 Os testes de observabilidade (`test/integration/observability`) sobem um **processo real** e leem o seu stdout: as linhas são JSON, carregam o contexto da requisição ou da mensagem, nunca repetem uma chave e nunca contêm valores monetários. O `/metrics` é conferido contra o tráfego gerado. Um teste provoca um lock timeout real e confere `db_lock_conflicts_total`, e a readiness é testada com fila inexistente, SQS inalcançável e PostgreSQL inalcançável.
 
@@ -167,6 +188,17 @@ Mensagens em `wager-transactions.fifo` seguem o envelope abaixo e passam pelo **
 Mensagens de um mesmo `MessageGroupId` são processadas em sequência e grupos diferentes em paralelo. Em `SIGTERM`, o consumidor para de receber, conclui as mensagens em andamento por até `CONSUMER_SHUTDOWN_TIMEOUT_MS` e devolve imediatamente as demais à fila.
 
 **Coerência de timeouts:** o processamento de uma mensagem é limitado por `DATABASE_LOCK_TIMEOUT_MS` + `DATABASE_STATEMENT_TIMEOUT_MS` (5 s + 15 s), abaixo do visibility timeout da fila (30 s), e `CONSUMER_SHUTDOWN_TIMEOUT_MS` (10 s) fica abaixo do `stop_grace_period` do container (30 s). Ao alterar qualquer um desses valores, mantenha essas relações.
+
+**Timeouts no cliente (falhas de rede):** o `statement_timeout` é aplicado pelo servidor e não ajuda quando a rede fica muda. Por isso todo acesso externo também tem um limite no próprio cliente:
+
+- **PostgreSQL:**
+  - `DATABASE_CONNECT_TIMEOUT_MS` (5 s) limita a abertura de uma conexão e a espera por uma conexão livre no pool.
+  - `DATABASE_QUERY_TIMEOUT_MS` (20 s) limita a espera por uma resposta. Precisa ser maior que o `statement_timeout`, e a conexão que estoura esse limite é descartada do pool.
+- **SQS:**
+  - `SQS_CONNECT_TIMEOUT_MS` (3 s) limita a abertura da conexão.
+  - `SQS_REQUEST_TIMEOUT_MS` (25 s) limita cada chamada. Precisa ser maior que a espera do long polling (`SQS_CONSUMER_WAIT_TIME_SECONDS`).
+
+O zod valida essas relações na inicialização. Uma chamada ao SQS que estoura o limite depois de já ter sido aplicada (o `DeleteMessage`, por exemplo) só faz a mensagem voltar como replay, sem efeito duplicado.
 
 ## Referências pendentes (`PENDING_REFERENCE`)
 
