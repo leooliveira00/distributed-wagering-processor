@@ -148,10 +148,10 @@ export function startFaultProxy(target: { host: string; port: number }): FaultPr
       mode = next;
       for (const link of [...links]) {
         if (next === 'refuse') cut(link);
-        // A partition does not close sockets: they just stop carrying bytes, for good. When
-        // the network comes back, the client has to notice and open new connections.
+        // A partition does not close sockets: they just stop carrying bytes, for good, even after
+        // the network comes back (no reset ever reaches the client). Only new connections work
+        // again, so the client must give up on silent ones by itself.
         if (next === 'blackhole') link.frozen = true;
-        if (next === 'pass' && link.frozen) cut(link);
       }
     },
     close() {
