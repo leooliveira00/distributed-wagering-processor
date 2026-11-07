@@ -16,12 +16,20 @@ export function isSafeCorrelationId(value: unknown): value is string {
   return typeof value === 'string' && CORRELATION_ID_PATTERN.test(value);
 }
 
+/**
+ * A UUID in canonical (lowercase) form. UUIDs are case-insensitive (RFC 9562): PostgreSQL treats
+ * `ABC…` and `abc…` as the same value, but the application compares and hashes strings. Without
+ * this, a valid UUID in uppercase would fail the wallet/player match and hash differently from
+ * the same operation in lowercase. Normalized at the boundary, before anything else sees it.
+ */
+export const uuidSchema = z.uuid().transform((value) => value.toLowerCase());
+
 /** Business fields of a wager operation (README §9 request body). */
 export const wagerOperationSchema = z.strictObject({
   providerId: z.string().min(1).max(64),
   externalTransactionId: z.string().min(1).max(128),
-  playerId: z.uuid(),
-  walletId: z.uuid(),
+  playerId: uuidSchema,
+  walletId: uuidSchema,
   roundId: z.string().min(1).max(128),
   gameId: z.string().min(1).max(128),
   kind: z.enum(WagerTransactionKind),

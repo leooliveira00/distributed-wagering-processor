@@ -7,12 +7,14 @@ import {
   SendMessageCommand,
   type SQSClient,
 } from '@aws-sdk/client-sqs';
+import { ApplicationError } from '../../application/errors';
 import { type FaultInjector } from '../../application/ports/fault-injector';
 import { type AppLogger, type LogFields } from '../../application/ports/logger';
 import { type Metrics } from '../../application/ports/metrics';
 import { type SubmitWagerTransaction } from '../../application/wagering/submit-wager-transaction';
 import { type WagerSubmissionResult } from '../../application/wagering/wager-views';
 import { backoffDelayMs, type BackoffPolicy } from '../../domain/shared/backoff';
+import { DomainError } from '../../domain/shared/domain-error';
 import { isSafeCorrelationId, wagerMessageSchema } from '../contracts/wager-contract';
 import { type Disposition, dispositionOfError, dispositionOfResult } from './message-disposition';
 
@@ -202,7 +204,13 @@ export class WagerMessageConsumer {
         { consumerName: this.options.consumerName, messageId },
       );
     } catch (error) {
-      return { disposition: dispositionOfError(error), fields };
+      const disposition = dispositionOfError(error);
+      // A retried or dead-lettered message logs WHY, so a failure on the queue path is as
+      // diagnosable as on HTTP. Only the error itself: never the payload (no amounts in logs).
+      return {
+        disposition,
+        fields: disposition.action === 'ack' ? fields : { ...fields, ...causeOf(error) },
+      };
     }
     // Committed, not acked yet: the window README §13.5 asks to survive.
     this.faults.trigger('consumer:after-commit');
@@ -326,6 +334,20 @@ export class WagerMessageConsumer {
   private isStopping(): boolean {
     return this.stopping;
   }
+}
+
+/**
+ * The cause of a failed submission, for the log: name and message, plus the stack for errors
+ * the application does not know (a bug), which is what an operator needs to find it.
+ */
+function causeOf(error: unknown): LogFields {
+  if (!(error instanceof Error)) return { error: String(error) };
+  const known = error instanceof ApplicationError || error instanceof DomainError;
+  return {
+    error: error.message || error.name,
+    errorName: error.name,
+    ...(known ? {} : { stack: error.stack }),
+  };
 }
 
 /** Groups by MessageGroupId, keeping the receive order inside each group. */

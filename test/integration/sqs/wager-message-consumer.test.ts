@@ -25,13 +25,14 @@ const MAX_RECEIVE_COUNT = 3;
 class ControlledUnitOfWork implements UnitOfWork {
   failuresLeft = 0;
   delayMs = 0;
+  failure: () => Error = () => new TransientError('database unavailable (simulated)');
 
   constructor(private readonly inner: UnitOfWork) {}
 
   async run<T>(work: (scope: TransactionScope) => Promise<T>, options?: UnitOfWorkOptions) {
     if (this.failuresLeft > 0) {
       this.failuresLeft--;
-      throw new TransientError('database unavailable (simulated)');
+      throw this.failure();
     }
     if (this.delayMs > 0) await Bun.sleep(this.delayMs);
     return this.inner.run(work, options);
@@ -341,6 +342,27 @@ describe('WagerMessageConsumer — transient failures', () => {
     expect(await transactionsOf(wallet.id)).toEqual([{ status: 'PROCESSED', failure_code: null }]);
     expect(await depth(queues.main)).toBe(0);
     await expectLedgerConsistent(db.sql, wallet.id);
+  }, 30_000);
+
+  it('logs the cause of an unexpected failure, with its stack, but never the payload', async () => {
+    const { queues, consumer, unitOfWork, logger } = await harness('unexpected-cause');
+    const wallet = await openWallet('100.00');
+    await queues.main.send(wagerMessage(wallet), { groupId: wallet.id });
+    unitOfWork.failuresLeft = 1;
+    unitOfWork.failure = () => new Error('bug in the queue path (simulated)');
+
+    await consumer.pollOnce();
+
+    const retry = logger.lines.find(
+      (line) => line.message === 'Message processing failed, retry scheduled',
+    );
+    expect(retry?.fields).toMatchObject({
+      code: 'UNEXPECTED_ERROR',
+      error: 'bug in the queue path (simulated)',
+      errorName: 'Error',
+    });
+    expect(String(retry?.fields.stack)).toContain('bug in the queue path (simulated)');
+    expect(JSON.stringify(retry?.fields)).not.toContain('"amount"');
   }, 30_000);
 
   it('hands a persistently failing message to the DLQ after the receive limit (redrive)', async () => {

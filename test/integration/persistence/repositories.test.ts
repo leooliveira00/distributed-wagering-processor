@@ -337,8 +337,10 @@ describe('transactions and references', () => {
     const refundId = await uow.run(async (scope) => {
       const wallet = await scope.wallets.findByIdForUpdate(opened.id);
       if (!wallet) throw new Error('wallet not found');
+      // Names the BET that will be resolved below; the lookup is skipped (reference: undefined)
+      // to simulate that it has not arrived yet.
       const refund = newTransaction(wallet, Kind.Refund, {
-        referenceExternalTransactionId: 'not-yet',
+        referenceExternalTransactionId: bet.externalTransactionId,
       });
       processor.process({
         transaction: refund,

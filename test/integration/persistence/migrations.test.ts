@@ -69,22 +69,33 @@ describe('migrations', () => {
       'Migration20261106000300_pending_dependents_index',
       'Migration20261107000400_pending_processing_failures',
       'Migration20261107000500_transaction_integrity',
+      'Migration20261107000600_processed_has_entry',
+      'Migration20261107000700_reference_and_wallet_integrity',
     ]);
     expect(await columnExists('wager_transactions', 'processing_failures')).toBe(true);
     expect(await tables()).toEqual(TABLES);
     expect(await triggers()).toEqual([
       'wager_transactions_guard_changes',
+      'wager_transactions_processed_has_entry',
+      'wager_transactions_reference_coherence',
       'wallet_ledger_entries_match_transaction',
       'wallet_ledger_entries_match_wallet',
       'wallet_ledger_entries_no_truncate',
       'wallet_ledger_entries_no_update_delete',
       'wallets_balance_has_ledger_entry',
       'wallets_guard_changes',
+      'wallets_initial_version',
     ]);
     expect(await indexExists(DEPENDENTS_INDEX)).toBe(true);
   });
 
   it('revert one migration at a time', async () => {
+    await db.orm.migrator.down();
+    expect(await triggers()).toHaveLength(8); // reference and initial version triggers gone
+
+    await db.orm.migrator.down();
+    expect(await triggers()).toHaveLength(7); // the processed-has-entry trigger gone
+
     await db.orm.migrator.down();
     expect(await triggers()).toHaveLength(5); // transaction integrity triggers gone
 

@@ -4,7 +4,20 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) recebidas de múltiplos provedores de jogos, via HTTP e SQS, mantendo correção financeira sob entregas duplicadas, fora de ordem e concorrentes entre múltiplas instâncias.
 
-Decisões, garantias, trade-offs e limitações estão em [`ARCHITECTURE.md`](ARCHITECTURE.md). Este README cobre setup, comandos, testes, API e uma [demo guiada](#demo-guiada).
+## Em 1 minuto
+
+```bash
+docker compose up -d --build --wait                 # PostgreSQL, SQS (MiniStack), migrations e a aplicação
+bun install && bun test                             # todas as suítes, com PostgreSQL e SQS reais, sem mocks
+docker compose --profile cluster up -d --build --wait   # mais duas instâncias, para a demo
+```
+
+- **Garantias:** nenhum débito ou crédito duplicado, nenhum saldo negativo e nenhum evento confirmado perdido, com 3 instâncias, entregas duplicadas e fora de ordem, processos mortos e quedas do PostgreSQL ou do SQS. Elas valem porque ficam no **PostgreSQL** (lock por wallet, constraints, triggers e outbox), não na memória nem no broker.
+- **Onde está cada coisa:**
+  - decisões, trade-offs e limitações: [`ARCHITECTURE.md`](ARCHITECTURE.md);
+  - teste de carga e análise: [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md);
+  - roteiro de 10 minutos com 3 instâncias: [demo guiada](#demo-guiada);
+  - endpoints e status HTTP: [API](#api).
 
 ## Stack
 
@@ -30,8 +43,8 @@ Decisões, garantias, trade-offs e limitações estão em [`ARCHITECTURE.md`](AR
 ## Subindo o ambiente
 
 ```bash
-docker compose up -d --build
-curl http://localhost:3000/health/live
+docker compose up -d --build --wait   # --wait: só retorna quando todos os serviços estão saudáveis
+curl http://localhost:3000/health/ready
 ```
 
 Serviços:
@@ -95,7 +108,8 @@ bun run dev
 Os testes de integração, concorrência e resiliência rodam contra o PostgreSQL **e** o emulador de SQS do compose, sem mocks. Os dois precisam estar no ar:
 
 ```bash
-docker compose up -d postgres sqs
+bun install                 # uma vez
+docker compose up -d --wait postgres sqs
 bun test                    # todas as suítes
 bun run test:integration    # ou uma suíte específica
 ```
@@ -203,7 +217,7 @@ Mensagens em `wager-transactions.fifo` seguem o envelope abaixo e passam pelo **
 | Falha transitória ou inesperada                                    | sem ack; nova tentativa com backoff via visibility timeout |
 | Tentativas esgotadas (`SQS_MAX_RECEIVE_COUNT`)                     | DLQ pela redrive policy da fila                            |
 
-Mensagens de um mesmo `MessageGroupId` são processadas em sequência e grupos diferentes em paralelo. Em `SIGTERM`, o consumidor para de receber, conclui as mensagens em andamento por até `CONSUMER_SHUTDOWN_TIMEOUT_MS` e devolve imediatamente as demais à fila.
+Mensagens de um mesmo `MessageGroupId` são processadas uma de cada vez, e grupos diferentes em paralelo. A ordem do grupo é uma otimização, não uma garantia: se uma mensagem precisa de retry, as seguintes do mesmo lote continuam sendo processadas, e ela volta depois do backoff. A consistência não depende dessa ordem, porque cada operação passa pelo lock da wallet, e uma referência que ainda não chegou fica em `PENDING_REFERENCE`. Em `SIGTERM`, o consumidor para de receber, conclui as mensagens em andamento por até `CONSUMER_SHUTDOWN_TIMEOUT_MS` e devolve imediatamente as demais à fila.
 
 **Coerência de timeouts:** o processamento de uma mensagem é limitado por `DATABASE_LOCK_TIMEOUT_MS` + `DATABASE_STATEMENT_TIMEOUT_MS` (5 s + 15 s), abaixo do visibility timeout da fila (30 s), e `CONSUMER_SHUTDOWN_TIMEOUT_MS` (10 s) fica abaixo do `stop_grace_period` do container (30 s). Ao alterar qualquer um desses valores, mantenha essas relações.
 
@@ -276,6 +290,7 @@ for p in 3000 3001 3002; do curl -s localhost:$p/health/ready; echo; done
 **2. Wallet com saldo inicial: OPENING no ledger** (lido por outra instância)
 
 ```bash
+RUN=$(bun -e 'console.log(Date.now())')   # prefixo dos ids desta execução: a demo pode ser repetida
 PLAYER=$(bun -e 'console.log(crypto.randomUUID())')
 WALLET=$(curl -s -X POST localhost:3000/wallets -H 'content-type: application/json' \
   -d "{\"playerId\":\"$PLAYER\",\"initialBalance\":{\"amount\":\"100.00\",\"currency\":\"BRL\"}}" \
@@ -283,13 +298,13 @@ WALLET=$(curl -s -X POST localhost:3000/wallets -H 'content-type: application/js
 curl -s localhost:3001/wallets/$WALLET/ledger; echo
 ```
 
-**3. Idempotência entre instâncias.** Uma função auxiliar envia uma operação para a instância da porta informada:
+**3. Idempotência entre instâncias.** Uma função auxiliar envia uma operação (`bet <porta> <id> <kind> <valor> [<id da referência>]`) para a instância da porta informada:
 
 ```bash
 bet() {
   curl -s -w '  -> HTTP %{http_code}\n' -X POST "localhost:$1/wagering/transactions" \
-    -H 'content-type: application/json' -H "Idempotency-Key: provider-a:$2" \
-    -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"$2\",\"playerId\":\"$PLAYER\",\"walletId\":\"$WALLET\",\"roundId\":\"round-1\",\"gameId\":\"fortune-chimp\",\"kind\":\"$3\",\"money\":{\"amount\":\"$4\",\"currency\":\"BRL\"}$5}"
+    -H 'content-type: application/json' -H "Idempotency-Key: provider-a:$RUN-$2" \
+    -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"$RUN-$2\",\"playerId\":\"$PLAYER\",\"walletId\":\"$WALLET\",\"roundId\":\"round-1\",\"gameId\":\"fortune-chimp\",\"kind\":\"$3\",\"money\":{\"amount\":\"$4\",\"currency\":\"BRL\"}${5:+,\"referenceExternalTransactionId\":\"$RUN-$5\"}}"
 }
 bet 3000 tx-1 BET 25.00   # 201 PROCESSED, saldo 75.00
 bet 3001 tx-1 BET 25.00   # 201, idempotentReplay: true, mesmo saldo (outra instância)
@@ -299,10 +314,10 @@ bet 3002 tx-1 BET 30.00   # 409 IDEMPOTENCY_KEY_CONFLICT (mesma key, outro paylo
 **4. Referência fora de ordem:** o ROLLBACK chega antes da BET.
 
 ```bash
-bet 3000 rb-2 ROLLBACK 10.00 ',"referenceExternalTransactionId":"tx-2"'   # 202 PENDING_REFERENCE
-bet 3001 tx-2 BET 10.00                                                     # 201
+bet 3000 rb-2 ROLLBACK 10.00 tx-2   # 202 PENDING_REFERENCE
+bet 3001 tx-2 BET 10.00             # 201
 sleep 1
-curl -s localhost:3002/providers/provider-a/wagering/transactions/rb-2; echo   # status PROCESSED
+curl -s localhost:3002/providers/provider-a/wagering/transactions/$RUN-rb-2; echo   # status PROCESSED
 ```
 
 **5. Corrida pelo saldo entre instâncias:** duas BETs de 80.00 sobre 100.00 ao mesmo tempo. Uma é processada, a outra é rejeitada com `INSUFFICIENT_FUNDS`, e o saldo termina em 20.00.

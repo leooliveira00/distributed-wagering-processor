@@ -21,7 +21,11 @@ import {
   type WagerTransactionView,
 } from '../../../application/wagering/wager-views';
 import { WagerTransactionStatus } from '../../../domain/wagering/wager-transaction-status';
-import { IDEMPOTENCY_KEY_PATTERN, wagerOperationSchema } from '../../contracts/wager-contract';
+import {
+  IDEMPOTENCY_KEY_PATTERN,
+  uuidSchema,
+  wagerOperationSchema,
+} from '../../contracts/wager-contract';
 import { type AuthenticatedRequest } from '../auth/provider-auth.guard';
 import { type HttpErrorBody } from '../errors/http-error-mapping';
 import { requestContextFrom } from '../request-context';
@@ -30,7 +34,7 @@ import { FAILURE_MESSAGES } from './failure-messages';
 
 const IDEMPOTENCY_HEADER = 'idempotency-key';
 
-const transactionIdSchema = z.uuid();
+const transactionIdSchema = uuidSchema;
 const providerParamsSchema = z.object({
   providerId: z.string().min(1).max(64),
   externalTransactionId: z.string().min(1).max(128),
